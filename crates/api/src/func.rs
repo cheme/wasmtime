@@ -7,7 +7,7 @@ use std::fmt;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
-use std::rc::Weak;
+use std::sync::Weak;
 use wasmtime_runtime::{Export, InstanceHandle, VMContext, VMFunctionBody};
 use wasmtime_runtime::{ExportFunction, VMTrampoline};
 

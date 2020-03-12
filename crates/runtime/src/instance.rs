@@ -21,7 +21,6 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::{mem, ptr, slice};
 use thiserror::Error;
@@ -68,7 +67,7 @@ pub(crate) struct Instance {
     host_state: Box<dyn Any>,
 
     /// Optional image of JIT'ed code for debugger registration.
-    dbg_jit_registration: Option<Rc<GdbJitImageRegistration>>,
+    dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
 
     /// Externally allocated data indicating how this instance will be
     /// interrupted.
@@ -764,6 +763,8 @@ pub struct InstanceHandle {
     instance: *mut Instance,
 }
 
+unsafe impl Send for InstanceHandle {}
+
 impl InstanceHandle {
     /// Create a new `InstanceHandle` pointing at a new `Instance`.
     ///
@@ -787,7 +788,7 @@ impl InstanceHandle {
         imports: Imports,
         mem_creator: Option<&dyn RuntimeMemoryCreator>,
         vmshared_signatures: BoxedSlice<SignatureIndex, VMSharedSignatureIndex>,
-        dbg_jit_registration: Option<Rc<GdbJitImageRegistration>>,
+        dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
         host_state: Box<dyn Any>,
         interrupts: Arc<VMInterrupts>,
     ) -> Result<Self, InstantiationError> {

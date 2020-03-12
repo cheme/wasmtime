@@ -26,7 +26,8 @@ cfg_if::cfg_if! {
         use std::mem::{self, MaybeUninit};
 
         /// Function which may handle custom signals while processing traps.
-        pub type SignalHandler<'a> = dyn Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool + 'a;
+        pub type SignalHandler<'a> = dyn Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool
+            + Send + Sync + 'a;
 
         static mut PREV_SIGSEGV: MaybeUninit<libc::sigaction> = MaybeUninit::uninit();
         static mut PREV_SIGBUS: MaybeUninit<libc::sigaction> = MaybeUninit::uninit();
@@ -183,7 +184,8 @@ cfg_if::cfg_if! {
         use winapi::vc::excpt::*;
 
         /// Function which may handle custom signals while processing traps.
-        pub type SignalHandler<'a> = dyn Fn(winapi::um::winnt::PEXCEPTION_POINTERS) -> bool + 'a;
+        pub type SignalHandler<'a> = dyn Fn(winapi::um::winnt::PEXCEPTION_POINTERS) -> bool
+            + Send + Sync + 'a;
 
         unsafe fn platform_init() {
             // our trap handler needs to go first, so that we can recover from

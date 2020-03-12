@@ -10,6 +10,7 @@ use cranelift_codegen::{binemit, ir};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use wasmtime_debug::{emit_debugsections_image, DebugInfoData};
 use wasmtime_environ::entity::{EntityRef, PrimaryMap};
 use wasmtime_environ::isa::{TargetFrontendConfig, TargetIsa};
@@ -48,12 +49,16 @@ pub enum CompilationStrategy {
 /// TODO: Consider using cranelift-module.
 pub struct Compiler {
     isa: Box<dyn TargetIsa>,
-    code_memory: CodeMemory,
     signatures: SignatureRegistry,
     strategy: CompilationStrategy,
     cache_config: CacheConfig,
     tunables: Tunables,
     interrupts: Arc<VMInterrupts>,
+    inner: RwLock<CompilerInner>,
+}
+
+struct CompilerInner {
+    code_memory: CodeMemory,
 }
 
 impl Compiler {
@@ -66,12 +71,14 @@ impl Compiler {
     ) -> Self {
         Self {
             isa,
-            code_memory: CodeMemory::new(),
             signatures: SignatureRegistry::new(),
             strategy,
             cache_config,
             tunables,
             interrupts: Arc::new(VMInterrupts::default()),
+            inner: RwLock::new(CompilerInner {
+                code_memory: CodeMemory::new(),
+            }),
         }
     }
 }
@@ -106,7 +113,7 @@ impl Compiler {
 
     /// Compile the given function bodies.
     pub(crate) fn compile<'data>(
-        &mut self,
+        &self,
         translation: &ModuleTranslation,
         debug_data: Option<DebugInfoData>,
     ) -> Result<Compilation, SetupError> {
@@ -134,8 +141,9 @@ impl Compiler {
 
         // Allocate all of the compiled functions into executable memory,
         // copying over their contents.
+        let mut inner = self.inner.write().unwrap();
         let finished_functions =
-            allocate_functions(&mut self.code_memory, &compilation).map_err(|message| {
+            allocate_functions(&mut inner.code_memory, &compilation).map_err(|message| {
                 SetupError::Instantiate(InstantiationError::Resource(format!(
                     "failed to allocate memory for functions: {}",
                     message
@@ -156,7 +164,7 @@ impl Compiler {
             }
             let (trampoline, relocations) = make_trampoline(
                 &*self.isa,
-                &mut self.code_memory,
+                &mut inner.code_memory,
                 &mut cx,
                 sig,
                 std::mem::size_of::<u128>(),
@@ -227,8 +235,12 @@ impl Compiler {
     }
 
     /// Make memory containing compiled code executable.
-    pub(crate) fn publish_compiled_code(&mut self) {
-        self.code_memory.publish(self.isa.as_ref());
+    pub(crate) fn publish_compiled_code(&self) {
+        self.inner
+            .write()
+            .unwrap()
+            .code_memory
+            .publish(self.isa.as_ref());
     }
 
     /// Shared signature registry.
@@ -239,7 +251,11 @@ impl Compiler {
     /// Returns whether or not the given address falls within the JIT code
     /// managed by the compiler
     pub fn is_in_jit_code(&self, addr: usize) -> bool {
-        self.code_memory.published_contains(addr)
+        self.inner
+            .read()
+            .unwrap()
+            .code_memory
+            .published_contains(addr)
     }
 }
 

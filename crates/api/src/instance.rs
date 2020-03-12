@@ -5,7 +5,9 @@ use std::any::Any;
 use std::mem;
 use wasmtime_environ::EntityIndex;
 use wasmtime_jit::{CompiledModule, Resolver};
-use wasmtime_runtime::{InstantiationError, SignatureRegistry, VMContext, VMFunctionBody};
+use wasmtime_runtime::{
+    InstanceHandle, InstantiationError, SignatureRegistry, VMContext, VMFunctionBody,
+};
 
 struct SimpleResolver<'a> {
     imports: &'a [Extern],
@@ -239,5 +241,10 @@ impl Instance {
     /// it wasn't a global.
     pub fn get_global(&self, name: &str) -> Option<Global> {
         self.get_export(name)?.into_global()
+    }
+
+    /// Returns internal instance handle.
+    pub fn handle(&self) -> &InstanceHandle {
+        &self.handle.handle
     }
 }

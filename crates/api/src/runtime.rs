@@ -1,13 +1,11 @@
 use crate::externals::MemoryCreator;
 use crate::trampoline::{MemoryCreatorProxy, StoreInstanceHandle};
 use anyhow::{bail, Result};
-use std::cell::RefCell;
 use std::cmp;
 use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use wasmparser::{OperatorValidatorConfig, ValidatingParserConfig};
 use wasmtime_environ::settings::{self, Configurable};
 use wasmtime_environ::{CacheConfig, Tunables};
@@ -724,14 +722,14 @@ impl Engine {
 /// ocnfiguration (see [`Config`] for more information).
 #[derive(Clone)]
 pub struct Store {
-    inner: Rc<StoreInner>,
+    inner: Arc<StoreInner>,
 }
 
 pub(crate) struct StoreInner {
     engine: Engine,
-    compiler: RefCell<Compiler>,
-    instances: RefCell<Vec<InstanceHandle>>,
-    signal_handler: RefCell<Option<Box<SignalHandler<'static>>>>,
+    compiler: Compiler,
+    instances: Mutex<Vec<InstanceHandle>>,
+    signal_handler: RwLock<Option<Arc<SignalHandler<'static>>>>,
 }
 
 impl Store {
@@ -752,16 +750,16 @@ impl Store {
             engine.config.tunables.clone(),
         );
         Store {
-            inner: Rc::new(StoreInner {
+            inner: Arc::new(StoreInner {
                 engine: engine.clone(),
-                compiler: RefCell::new(compiler),
-                instances: RefCell::new(Vec::new()),
-                signal_handler: RefCell::new(None),
+                compiler: compiler,
+                instances: Mutex::new(Vec::new()),
+                signal_handler: RwLock::new(None),
             }),
         }
     }
 
-    pub(crate) fn from_inner(inner: Rc<StoreInner>) -> Store {
+    pub(crate) fn from_inner(inner: Arc<StoreInner>) -> Store {
         Store { inner }
     }
 
@@ -775,16 +773,12 @@ impl Store {
         self.engine().config.memory_creator.as_ref().map(|x| x as _)
     }
 
-    pub(crate) fn compiler(&self) -> std::cell::Ref<'_, Compiler> {
-        self.inner.compiler.borrow()
-    }
-
-    pub(crate) fn compiler_mut(&self) -> std::cell::RefMut<'_, Compiler> {
-        self.inner.compiler.borrow_mut()
+    pub(crate) fn compiler(&self) -> &Compiler {
+        &self.inner.compiler
     }
 
     pub(crate) unsafe fn add_instance(&self, handle: InstanceHandle) -> StoreInstanceHandle {
-        self.inner.instances.borrow_mut().push(handle.clone());
+        self.inner.instances.lock().unwrap().push(handle.clone());
         StoreInstanceHandle {
             store: self.clone(),
             handle,
@@ -795,7 +789,8 @@ impl Store {
         debug_assert!(self
             .inner
             .instances
-            .borrow()
+            .lock()
+            .unwrap()
             .iter()
             .any(|i| i.vmctx_ptr() == handle.vmctx_ptr()));
         StoreInstanceHandle {
@@ -805,17 +800,15 @@ impl Store {
     }
 
     pub(crate) fn weak(&self) -> Weak<StoreInner> {
-        Rc::downgrade(&self.inner)
+        Arc::downgrade(&self.inner)
     }
 
-    pub(crate) fn signal_handler(&self) -> std::cell::Ref<'_, Option<Box<SignalHandler<'static>>>> {
-        self.inner.signal_handler.borrow()
+    pub(crate) fn signal_handler(&self) -> Option<Arc<SignalHandler<'static>>> {
+        self.inner.signal_handler.read().unwrap().clone()
     }
 
-    pub(crate) fn signal_handler_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, Option<Box<SignalHandler<'static>>>> {
-        self.inner.signal_handler.borrow_mut()
+    pub(crate) fn set_signal_handler(&self, handler: Arc<SignalHandler<'static>>) {
+        *self.inner.signal_handler.write().unwrap() = Some(handler);
     }
 
     /// Returns whether the stores `a` and `b` refer to the same underlying
@@ -825,7 +818,7 @@ impl Store {
     /// to the same underlying storage, and this method can be used to determine
     /// whether two stores are indeed the same.
     pub fn same(a: &Store, b: &Store) -> bool {
-        Rc::ptr_eq(&a.inner, &b.inner)
+        Arc::ptr_eq(&a.inner, &b.inner)
     }
 
     /// Creates an [`InterruptHandle`] which can be used to interrupt the
@@ -928,7 +921,7 @@ impl Default for Store {
 
 impl Drop for StoreInner {
     fn drop(&mut self) {
-        for instance in self.instances.get_mut().iter() {
+        for instance in self.instances.lock().unwrap().iter() {
             unsafe {
                 instance.dealloc();
             }

@@ -10,7 +10,6 @@ use crate::resolver::Resolver;
 use std::any::Any;
 use std::collections::HashMap;
 use std::io::Write;
-use std::rc::Rc;
 use std::sync::Arc;
 use thiserror::Error;
 use wasmtime_debug::read_debuginfo;
@@ -49,6 +48,10 @@ pub enum SetupError {
     DebugInfo(#[from] anyhow::Error),
 }
 
+struct FinishedFunctions(BoxedSlice<DefinedFuncIndex, *mut [VMFunctionBody]>);
+unsafe impl Send for FinishedFunctions {}
+unsafe impl Sync for FinishedFunctions {}
+
 /// This is similar to `CompiledModule`, but references the data initializers
 /// from the wasm buffer rather than holding its own copy.
 struct RawCompiledModule<'data> {
@@ -65,7 +68,7 @@ struct RawCompiledModule<'data> {
 impl<'data> RawCompiledModule<'data> {
     /// Create a new `RawCompiledModule` by compiling the wasm module in `data` and instatiating it.
     fn new(
-        compiler: &mut Compiler,
+        compiler: &Compiler,
         data: &'data [u8],
         profiler: &dyn ProfilingAgent,
     ) -> Result<Self, SetupError> {
@@ -132,11 +135,11 @@ impl<'data> RawCompiledModule<'data> {
 /// A compiled wasm module, ready to be instantiated.
 pub struct CompiledModule {
     module: Arc<Module>,
-    finished_functions: BoxedSlice<DefinedFuncIndex, *mut [VMFunctionBody]>,
+    finished_functions: FinishedFunctions,
     trampolines: HashMap<VMSharedSignatureIndex, VMTrampoline>,
     data_initializers: Box<[OwnedDataInitializer]>,
     signatures: BoxedSlice<SignatureIndex, VMSharedSignatureIndex>,
-    dbg_jit_registration: Option<Rc<GdbJitImageRegistration>>,
+    dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
     traps: Traps,
     address_transform: ModuleAddressMap,
     interrupts: Arc<VMInterrupts>,
@@ -145,7 +148,7 @@ pub struct CompiledModule {
 impl CompiledModule {
     /// Compile a data buffer into a `CompiledModule`, which may then be instantiated.
     pub fn new<'data>(
-        compiler: &mut Compiler,
+        compiler: &Compiler,
         data: &'data [u8],
         profiler: &dyn ProfilingAgent,
     ) -> Result<Self, SetupError> {
@@ -182,11 +185,11 @@ impl CompiledModule {
     ) -> Self {
         Self {
             module: Arc::new(module),
-            finished_functions,
+            finished_functions: FinishedFunctions(finished_functions),
             trampolines,
             data_initializers,
             signatures,
-            dbg_jit_registration: dbg_jit_registration.map(Rc::new),
+            dbg_jit_registration: dbg_jit_registration.map(Arc::new),
             traps,
             address_transform,
             interrupts,
@@ -212,12 +215,12 @@ impl CompiledModule {
         let imports = resolve_imports(&self.module, &sig_registry, resolver)?;
         InstanceHandle::new(
             Arc::clone(&self.module),
-            self.finished_functions.clone(),
+            self.finished_functions.0.clone(),
             self.trampolines.clone(),
             imports,
             mem_creator,
             self.signatures.clone(),
-            self.dbg_jit_registration.as_ref().map(|r| Rc::clone(&r)),
+            self.dbg_jit_registration.as_ref().map(|r| Arc::clone(&r)),
             host_state,
             self.interrupts.clone(),
         )
@@ -251,7 +254,7 @@ impl CompiledModule {
 
     /// Returns the map of all finished JIT functions compiled for this module
     pub fn finished_functions(&self) -> &BoxedSlice<DefinedFuncIndex, *mut [VMFunctionBody]> {
-        &self.finished_functions
+        &self.finished_functions.0
     }
 
     /// Returns the a map for all traps in this module.

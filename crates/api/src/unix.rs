@@ -9,6 +9,7 @@
 //! throughout the `wasmtime` crate with extra functionality that's only
 //! available on Unix.
 
+use std::sync::Arc;
 use crate::Store;
 
 /// Extensions for the [`Store`] type only available on Unix.
@@ -18,14 +19,14 @@ pub trait StoreExt {
     /// [async-signal-safe](http://man7.org/linux/man-pages/man7/signal-safety.7.html).
     unsafe fn set_signal_handler<H>(&self, handler: H)
     where
-        H: 'static + Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool;
+        H: 'static + Send + Sync + Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool;
 }
 
 impl StoreExt for Store {
     unsafe fn set_signal_handler<H>(&self, handler: H)
     where
-        H: 'static + Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool,
+        H: 'static + Send + Sync + Fn(libc::c_int, *const libc::siginfo_t, *const libc::c_void) -> bool,
     {
-        *self.signal_handler_mut() = Some(Box::new(handler));
+       Store::set_signal_handler(self, Arc::new(handler));
     }
 }
