@@ -22,7 +22,6 @@ use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::convert::TryFrom;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::{mem, ptr, slice};
 use thiserror::Error;
@@ -87,13 +86,13 @@ pub(crate) struct Instance {
     tables: BoxedSlice<DefinedTableIndex, Table>,
 
     /// Pointers to functions in executable memory.
-    finished_functions: BoxedSlice<DefinedFuncIndex, *mut [VMFunctionBody]>,
+    finished_functions: BoxedSlice<DefinedFuncIndex, *const [VMFunctionBody]>,
 
     /// Hosts can store arbitrary per-instance information here.
     host_state: Box<dyn Any>,
 
     /// Optional image of JIT'ed code for debugger registration.
-    dbg_jit_registration: Option<Rc<GdbJitImageRegistration>>,
+    dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
 
     /// Handler run when `SIGBUS`, `SIGFPE`, `SIGILL`, or `SIGSEGV` are caught by the instance thread.
     pub(crate) signal_handler: Cell<Option<Box<SignalHandler>>>,
@@ -553,11 +552,11 @@ impl InstanceHandle {
     pub unsafe fn new(
         module: Arc<Module>,
         trap_registration: TrapRegistration,
-        finished_functions: BoxedSlice<DefinedFuncIndex, *mut [VMFunctionBody]>,
+        finished_functions: BoxedSlice<DefinedFuncIndex, *const [VMFunctionBody]>,
         imports: Imports,
         data_initializers: &[DataInitializer<'_>],
         vmshared_signatures: BoxedSlice<SignatureIndex, VMSharedSignatureIndex>,
-        dbg_jit_registration: Option<Rc<GdbJitImageRegistration>>,
+        dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
         host_state: Box<dyn Any>,
     ) -> Result<Self, InstantiationError> {
         let tables = create_tables(&module);
