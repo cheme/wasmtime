@@ -1,5 +1,5 @@
 [package]
-name = "wasmtime"
+name = "substrate-wasmtime"
 version = "0.16.0"
 authors = ["The Wasmtime Project Developers"]
 description = "High-level API to expose the Wasmtime runtime"
@@ -10,9 +10,9 @@ readme = "README.md"
 edition = "2018"
 
 [dependencies]
-wasmtime-runtime = { path = "../runtime", version = "0.16.0" }
+wasmtime-runtime = { path = "../runtime", version = "0.16.0", package = "substrate-wasmtime-runtime"}
 wasmtime-environ = { path = "../environ", version = "0.16.0" }
-wasmtime-jit = { path = "../jit", version = "0.16.0" }
+wasmtime-jit = { path = "../jit", version = "0.16.0", package = "substrate-wasmtime-jit" }
 wasmtime-profiling = { path = "../profiling", version = "0.16.0" }
 wasmparser = "0.52.0"
 target-lexicon = { version = "0.10.0", default-features = false }

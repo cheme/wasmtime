@@ -22,10 +22,10 @@ doc = false
 
 [dependencies]
 # Enable all supported architectures by default.
-wasmtime = { path = "crates/api", version = "0.16.0", default-features = false }
+wasmtime = { path = "crates/api", version = "0.16.0", default-features = false, package = "substrate-wasmtime" }
 wasmtime-debug = { path = "crates/debug", version = "0.16.0" }
 wasmtime-environ = { path = "crates/environ", version = "0.16.0" }
-wasmtime-jit = { path = "crates/jit", version = "0.16.0" }
+wasmtime-jit = { path = "crates/jit", version = "0.16.0", package = "substrate-wasmtime-jit" }
 wasmtime-obj = { path = "crates/obj", version = "0.16.0" }
 wasmtime-wast = { path = "crates/wast", version = "0.16.0" }
 wasmtime-wasi = { path = "crates/wasi", version = "0.16.0" }
@@ -47,7 +47,7 @@ more-asserts = "0.2.1"
 tempfile = "3.1.0"
 test-programs = { path = "crates/test-programs" }
 wasmtime-fuzzing = { path = "crates/fuzzing" }
-wasmtime-runtime = { path = "crates/runtime" }
+wasmtime-runtime = { path = "crates/runtime", package = "substrate-wasmtime-runtime" }
 
 [build-dependencies]
 anyhow = "1.0.19"

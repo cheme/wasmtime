@@ -1,5 +1,5 @@
 [package]
-name = "wasmtime-runtime"
+name = "substrate-wasmtime-runtime"
 version = "0.16.0"
 authors = ["The Wasmtime Project Developers"]
 description = "Runtime library support for Wasmtime"

@@ -1782,6 +1782,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "substrate-wasmtime"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "backtrace",
+ "cfg-if",
+ "lazy_static",
+ "libc",
+ "region",
+ "rustc-demangle",
+ "substrate-wasmtime-jit",
+ "substrate-wasmtime-runtime",
+ "target-lexicon",
+ "tempfile",
+ "wasmparser",
+ "wasmtime-environ",
+ "wasmtime-profiling",
+ "wat",
+ "winapi",
+]
+
+[[package]]
+name = "substrate-wasmtime-jit"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "cfg-if",
+ "cranelift-codegen",
+ "cranelift-entity",
+ "cranelift-frontend",
+ "cranelift-native",
+ "cranelift-wasm",
+ "gimli",
+ "log",
+ "more-asserts",
+ "region",
+ "substrate-wasmtime-runtime",
+ "target-lexicon",
+ "thiserror",
+ "wasmparser",
+ "wasmtime-debug",
+ "wasmtime-environ",
+ "wasmtime-profiling",
+ "winapi",
+]
+
+[[package]]
+name = "substrate-wasmtime-runtime"
+version = "0.16.0"
+dependencies = [
+ "backtrace",
+ "cc",
+ "cfg-if",
+ "indexmap",
+ "lazy_static",
+ "libc",
+ "memoffset",
+ "more-asserts",
+ "region",
+ "thiserror",
+ "wasmtime-environ",
+ "winapi",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1869,10 +1934,10 @@ dependencies = [
  "cfg-if",
  "os_pipe",
  "pretty_env_logger",
+ "substrate-wasmtime",
  "target-lexicon",
  "tempfile",
  "wasi-common",
- "wasmtime",
  "wasmtime-wasi",
  "wat",
 ]
@@ -2047,35 +2112,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmtime"
-version = "0.16.0"
-dependencies = [
- "anyhow",
- "backtrace",
- "cfg-if",
- "lazy_static",
- "libc",
- "region",
- "rustc-demangle",
- "target-lexicon",
- "tempfile",
- "wasmparser",
- "wasmtime-environ",
- "wasmtime-jit",
- "wasmtime-profiling",
- "wasmtime-runtime",
- "wat",
- "winapi",
-]
-
-[[package]]
 name = "wasmtime-c-api"
 version = "0.16.0"
 dependencies = [
  "anyhow",
  "once_cell",
+ "substrate-wasmtime",
  "wasi-common",
- "wasmtime",
  "wasmtime-c-api-macros",
  "wasmtime-wasi",
  "wat",
@@ -2103,17 +2146,17 @@ dependencies = [
  "pretty_env_logger",
  "rayon",
  "structopt",
+ "substrate-wasmtime",
+ "substrate-wasmtime-jit",
+ "substrate-wasmtime-runtime",
  "target-lexicon",
  "tempfile",
  "test-programs",
  "wasi-common",
- "wasmtime",
  "wasmtime-debug",
  "wasmtime-environ",
  "wasmtime-fuzzing",
- "wasmtime-jit",
  "wasmtime-obj",
- "wasmtime-runtime",
  "wasmtime-wasi",
  "wasmtime-wast",
  "wat",
@@ -2173,8 +2216,8 @@ dependencies = [
  "cranelift-reader",
  "cranelift-wasm",
  "libfuzzer-sys",
+ "substrate-wasmtime",
  "target-lexicon",
- "wasmtime",
  "wasmtime-fuzzing",
 ]
 
@@ -2188,36 +2231,11 @@ dependencies = [
  "env_logger 0.7.1",
  "log",
  "rayon",
+ "substrate-wasmtime",
  "wasmparser",
  "wasmprinter",
- "wasmtime",
  "wasmtime-wast",
  "wat",
-]
-
-[[package]]
-name = "wasmtime-jit"
-version = "0.16.0"
-dependencies = [
- "anyhow",
- "cfg-if",
- "cranelift-codegen",
- "cranelift-entity",
- "cranelift-frontend",
- "cranelift-native",
- "cranelift-wasm",
- "gimli",
- "log",
- "more-asserts",
- "region",
- "target-lexicon",
- "thiserror",
- "wasmparser",
- "wasmtime-debug",
- "wasmtime-environ",
- "wasmtime-profiling",
- "wasmtime-runtime",
- "winapi",
 ]
 
 [[package]]
@@ -2243,27 +2261,9 @@ dependencies = [
  "object",
  "scroll",
  "serde",
+ "substrate-wasmtime-runtime",
  "target-lexicon",
  "wasmtime-environ",
- "wasmtime-runtime",
-]
-
-[[package]]
-name = "wasmtime-runtime"
-version = "0.16.0"
-dependencies = [
- "backtrace",
- "cc",
- "cfg-if",
- "indexmap",
- "lazy_static",
- "libc",
- "memoffset",
- "more-asserts",
- "region",
- "thiserror",
- "wasmtime-environ",
- "winapi",
 ]
 
 [[package]]
@@ -2271,7 +2271,7 @@ name = "wasmtime-rust"
 version = "0.16.0"
 dependencies = [
  "anyhow",
- "wasmtime",
+ "substrate-wasmtime",
  "wasmtime-rust-macro",
  "wasmtime-wasi",
 ]
@@ -2291,9 +2291,9 @@ version = "0.16.0"
 dependencies = [
  "anyhow",
  "log",
+ "substrate-wasmtime",
+ "substrate-wasmtime-runtime",
  "wasi-common",
- "wasmtime",
- "wasmtime-runtime",
  "wig",
  "wiggle",
 ]
@@ -2303,7 +2303,7 @@ name = "wasmtime-wast"
 version = "0.16.0"
 dependencies = [
  "anyhow",
- "wasmtime",
+ "substrate-wasmtime",
  "wast 15.0.0",
 ]
 
