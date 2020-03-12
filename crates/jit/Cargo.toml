@@ -1,5 +1,5 @@
 [package]
-name = "wasmtime-jit"
+name = "substrate-wasmtime-jit"
 version = "0.12.0"
 authors = ["The Wasmtime Project Developers"]
 description = "JIT-style execution for WebAsssembly code in Cranelift"
@@ -17,7 +17,7 @@ cranelift-wasm = { path = "../../cranelift/wasm", version = "0.59.0", features =
 cranelift-native = { path = "../../cranelift/native", version = "0.59.0" }
 cranelift-frontend = { path = "../../cranelift/frontend", version = "0.59.0" }
 wasmtime-environ = { path = "../environ", version = "0.12.0" }
-wasmtime-runtime = { path = "../runtime", version = "0.12.0" }
+wasmtime-runtime = { path = "../runtime", version = "0.12.0" , package = "substrate-wasmtime-runtime"}
 wasmtime-debug = { path = "../debug", version = "0.12.0" }
 wasmtime-profiling = { path = "../profiling", version = "0.12.0" }
 region = "2.0.0"

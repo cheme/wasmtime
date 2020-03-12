@@ -15,7 +15,7 @@ log = "0.4.8"
 rayon = "1.2.1"
 wasmparser = "0.51.2"
 wasmprinter = "0.2.1"
-wasmtime = { path = "../api", version = "0.12.0" }
+wasmtime = { path = "../api", version = "0.12.0" , package = "substrate-wasmtime"}
 
 [dev-dependencies]
 wat = "1.0.10"

@@ -1900,6 +1900,74 @@ dependencies = [
 ]
 
 [[package]]
+name = "substrate-wasmtime"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "backtrace",
+ "cfg-if",
+ "file-per-thread-logger",
+ "lazy_static",
+ "libc",
+ "pretty_env_logger",
+ "rayon",
+ "region",
+ "rustc-demangle",
+ "substrate-wasmtime-jit",
+ "substrate-wasmtime-runtime",
+ "target-lexicon",
+ "tempfile",
+ "wasi-common",
+ "wasmparser 0.51.2",
+ "wasmtime-environ",
+ "wasmtime-profiling",
+ "wat",
+ "winapi",
+]
+
+[[package]]
+name = "substrate-wasmtime-jit"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "cfg-if",
+ "cranelift-codegen",
+ "cranelift-entity",
+ "cranelift-frontend",
+ "cranelift-native",
+ "cranelift-wasm",
+ "more-asserts",
+ "region",
+ "substrate-wasmtime-runtime",
+ "target-lexicon",
+ "thiserror",
+ "wasmparser 0.51.2",
+ "wasmtime-debug",
+ "wasmtime-environ",
+ "wasmtime-profiling",
+ "winapi",
+]
+
+[[package]]
+name = "substrate-wasmtime-runtime"
+version = "0.12.0"
+dependencies = [
+ "backtrace",
+ "cc",
+ "cfg-if",
+ "indexmap",
+ "lazy_static",
+ "libc",
+ "memoffset",
+ "more-asserts",
+ "region",
+ "thiserror",
+ "wasmtime-environ",
+ "wasmtime-profiling",
+ "winapi",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1989,10 +2057,10 @@ dependencies = [
  "cfg-if",
  "os_pipe",
  "pretty_env_logger",
+ "substrate-wasmtime",
  "target-lexicon",
  "tempfile",
  "wasi-common",
- "wasmtime",
  "wasmtime-wasi",
  "wat",
 ]
@@ -2231,37 +2299,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmtime"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "backtrace",
- "cfg-if",
- "file-per-thread-logger",
- "lazy_static",
- "libc",
- "pretty_env_logger",
- "rayon",
- "region",
- "rustc-demangle",
- "target-lexicon",
- "tempfile",
- "wasi-common",
- "wasmparser 0.51.2",
- "wasmtime-environ",
- "wasmtime-jit",
- "wasmtime-profiling",
- "wasmtime-runtime",
- "wat",
- "winapi",
-]
-
-[[package]]
 name = "wasmtime-c-api"
 version = "0.12.0"
 dependencies = [
+ "substrate-wasmtime",
  "wasi-common",
- "wasmtime",
  "wasmtime-wasi",
  "wat",
 ]
@@ -2279,19 +2321,19 @@ dependencies = [
  "pretty_env_logger",
  "rayon",
  "structopt",
+ "substrate-wasmtime",
+ "substrate-wasmtime-jit",
+ "substrate-wasmtime-runtime",
  "target-lexicon",
  "tempfile",
  "test-programs",
  "wasi-common",
  "wasm-webidl-bindings",
- "wasmtime",
  "wasmtime-debug",
  "wasmtime-environ",
  "wasmtime-interface-types",
- "wasmtime-jit",
  "wasmtime-obj",
  "wasmtime-profiling",
- "wasmtime-runtime",
  "wasmtime-wasi",
  "wasmtime-wast",
  "wat",
@@ -2353,8 +2395,8 @@ dependencies = [
  "cranelift-reader",
  "cranelift-wasm",
  "libfuzzer-sys",
+ "substrate-wasmtime",
  "target-lexicon",
- "wasmtime",
  "wasmtime-fuzzing",
 ]
 
@@ -2368,9 +2410,9 @@ dependencies = [
  "env_logger 0.7.1",
  "log",
  "rayon",
+ "substrate-wasmtime",
  "wasmparser 0.51.2",
  "wasmprinter",
- "wasmtime",
  "wat",
 ]
 
@@ -2379,37 +2421,14 @@ name = "wasmtime-interface-types"
 version = "0.12.0"
 dependencies = [
  "anyhow",
+ "substrate-wasmtime",
+ "substrate-wasmtime-jit",
+ "substrate-wasmtime-runtime",
  "walrus",
  "wasm-webidl-bindings",
  "wasmparser 0.51.2",
- "wasmtime",
  "wasmtime-environ",
- "wasmtime-jit",
- "wasmtime-runtime",
  "wasmtime-wasi",
-]
-
-[[package]]
-name = "wasmtime-jit"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "cfg-if",
- "cranelift-codegen",
- "cranelift-entity",
- "cranelift-frontend",
- "cranelift-native",
- "cranelift-wasm",
- "more-asserts",
- "region",
- "target-lexicon",
- "thiserror",
- "wasmparser 0.51.2",
- "wasmtime-debug",
- "wasmtime-environ",
- "wasmtime-profiling",
- "wasmtime-runtime",
- "winapi",
 ]
 
 [[package]]
@@ -2443,30 +2462,11 @@ dependencies = [
  "anyhow",
  "pyo3",
  "region",
+ "substrate-wasmtime",
  "target-lexicon",
  "wasmparser 0.51.2",
- "wasmtime",
  "wasmtime-interface-types",
  "wasmtime-wasi",
-]
-
-[[package]]
-name = "wasmtime-runtime"
-version = "0.12.0"
-dependencies = [
- "backtrace",
- "cc",
- "cfg-if",
- "indexmap",
- "lazy_static",
- "libc",
- "memoffset",
- "more-asserts",
- "region",
- "thiserror",
- "wasmtime-environ",
- "wasmtime-profiling",
- "winapi",
 ]
 
 [[package]]
@@ -2474,7 +2474,7 @@ name = "wasmtime-rust"
 version = "0.12.0"
 dependencies = [
  "anyhow",
- "wasmtime",
+ "substrate-wasmtime",
  "wasmtime-interface-types",
  "wasmtime-rust-macro",
  "wasmtime-wasi",
@@ -2495,9 +2495,9 @@ version = "0.12.0"
 dependencies = [
  "anyhow",
  "log",
+ "substrate-wasmtime",
+ "substrate-wasmtime-runtime",
  "wasi-common",
- "wasmtime",
- "wasmtime-runtime",
  "wig",
 ]
 
@@ -2506,7 +2506,7 @@ name = "wasmtime-wast"
 version = "0.12.0"
 dependencies = [
  "anyhow",
- "wasmtime",
+ "substrate-wasmtime",
  "wast",
 ]
 

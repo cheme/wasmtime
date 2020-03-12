@@ -23,11 +23,11 @@ doc = false
 
 [dependencies]
 # Enable all supported architectures by default.
-wasmtime = { path = "crates/api" }
+wasmtime = { path = "crates/api" , package = "substrate-wasmtime"}
 wasmtime-debug = { path = "crates/debug" }
 wasmtime-environ = { path = "crates/environ" }
 wasmtime-interface-types = { path = "crates/interface-types" }
-wasmtime-jit = { path = "crates/jit" }
+wasmtime-jit = { path = "crates/jit" , package = "substrate-wasmtime-jit"}
 wasmtime-obj = { path = "crates/obj" }
 wasmtime-profiling = { path = "crates/profiling" }
 wasmtime-wast = { path = "crates/wast" }
@@ -45,7 +45,7 @@ rayon = "1.2.1"
 wasm-webidl-bindings = "0.8"
 
 [dev-dependencies]
-wasmtime-runtime = { path = "crates/runtime" }
+wasmtime-runtime = { path = "crates/runtime" , package = "substrate-wasmtime-runtime"}
 more-asserts = "0.2.1"
 # This feature requires the wasm32-wasi target be installed. It enables
 # wasm32-wasi integration tests. To enable, run
