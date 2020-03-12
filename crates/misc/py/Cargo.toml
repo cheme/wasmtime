@@ -17,7 +17,7 @@ test = false
 doc = false
 
 [dependencies]
-wasmtime = { path = "../../api", version = "0.12.0" }
+wasmtime = { path = "../../api", version = "0.13.0-threadsafe.1", package = "substrate-wasmtime"}
 wasmtime-interface-types = { path = "../../interface-types", version = "0.12.0" }
 wasmtime-wasi = { path = "../../wasi", version = "0.12.0" }
 target-lexicon = { version = "0.10.0", default-features = false }

@@ -1,17 +1,17 @@
 [package]
-name = "wasmtime"
-version = "0.12.0"
-authors = ["The Wasmtime Project Developers"]
-description = "High-level API to expose the Wasmtime runtime"
+name = "substrate-wasmtime"
+version = "0.13.0-threadsafe.1"
+authors = ["The Wasmtime Project Developers", "ParityTech"]
+description = "[a thread-safe patched] High-level API to expose the Wasmtime runtime"
 license = "Apache-2.0 WITH LLVM-exception"
-repository = "https://github.com/bytecodealliance/wasmtime"
+repository = "https://github.com/paritytech/wasmtime"
 readme = "README.md"
 edition = "2018"
 
 [dependencies]
-wasmtime-runtime = { path = "../runtime", version = "0.12.0" }
+wasmtime-runtime = { path = "../runtime", version = "0.13.0-threadsafe.1", package = "substrate-wasmtime-runtime"}
 wasmtime-environ = { path = "../environ", version = "0.12.0" }
-wasmtime-jit = { path = "../jit", version = "0.12.0" }
+wasmtime-jit = { path = "../jit", version = "0.13.0-threadsafe.1", package = "substrate-wasmtime-jit"}
 wasmtime-profiling = { path = "../profiling" }
 wasmparser = "0.51.2"
 target-lexicon = { version = "0.10.0", default-features = false }
@@ -37,7 +37,7 @@ wat = "1.0"
 tempfile = "3.1"
 
 [badges]
-maintenance = { status = "actively-developed" }
+maintenance = { status = "deprecated" }
 
 [features]
 default = ['wat']

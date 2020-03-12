@@ -17,6 +17,6 @@ test = false
 doctest = false
 
 [dependencies]
-wasmtime = { path = "../api" }
+wasmtime = { path = "../api" , package = "substrate-wasmtime", version = "0.13.0-threadsafe.1"}
 wasi-common = { path = "../wasi-common" }
 wasmtime-wasi = { path = "../wasi" }

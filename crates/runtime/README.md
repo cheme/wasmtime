@@ -1,3 +1,6 @@
+_This is a fork, patching some thread-safety into this crate. It is deprecated and
+only exists until [#888](https://github.com/bytecodealliance/wasmtime/issues/888) is fixed_
+
 This is the `wasmtime-runtime` crate, which contains wasm runtime library
 support, supporting the wasm ABI used by [`wasmtime-environ`],
 [`wasmtime-jit`], and [`wasmtime-obj`].

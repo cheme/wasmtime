@@ -11,7 +11,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = "0.2.0"
 wasmtime-fuzzing = { path = "../crates/fuzzing" }
-wasmtime = { path = "../crates/api" }
+wasmtime = { path = "../crates/api" , package = "substrate-wasmtime", version = "0.13.0-threadsafe.1"}
 libfuzzer-sys = "0.2.1"
 
 [[bin]]
