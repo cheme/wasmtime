@@ -1,9 +1,9 @@
+use std::cmp::min;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::cmp::min;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 use wasmparser::{OperatorValidatorConfig, ValidatingParserConfig};
 use wasmtime_environ::settings::{self, Configurable};

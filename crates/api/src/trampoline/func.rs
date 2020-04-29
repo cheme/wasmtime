@@ -10,6 +10,7 @@ use std::mem;
 use std::panic::{self, AssertUnwindSafe};
 use wasmtime_environ::entity::PrimaryMap;
 use wasmtime_environ::isa::TargetIsa;
+use wasmtime_environ::wasm::DefinedFuncIndex;
 use wasmtime_environ::{ir, settings, CompiledFunction, EntityIndex, Module};
 use wasmtime_jit::trampoline::ir::{
     ExternalName, Function, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
@@ -19,7 +20,6 @@ use wasmtime_jit::trampoline::{
 };
 use wasmtime_jit::{native, CodeMemory};
 use wasmtime_runtime::{InstanceHandle, VMContext, VMFunctionBody, VMTrampoline};
-use wasmtime_environ::wasm::DefinedFuncIndex;
 
 struct TrampolineState {
     func: Box<dyn Fn(*mut VMContext, *mut u128) -> Result<(), Trap>>,
