@@ -5,12 +5,12 @@ use crate::gc::build_dependencies;
 use crate::DebugInfoData;
 use anyhow::Error;
 use gimli::{
-    write, DebugAddr, DebugAddrBase, DebugLine, DebugStr, LocationLists, RangeLists,
-    UnitSectionOffset,
+    write, DebugAddr, DebugLine, DebugLineStr, DebugStr, DebugStrOffsets, LocationLists,
+    RangeLists, UnitSectionOffset,
 };
 use std::collections::HashSet;
 use thiserror::Error;
-use wasmtime_environ::isa::TargetFrontendConfig;
+use wasmtime_environ::isa::TargetIsa;
 use wasmtime_environ::{ModuleAddressMap, ModuleVmctxInfo, ValueLabelsRanges};
 
 pub use address_transform::AddressTransform;
@@ -38,16 +38,17 @@ where
     R: Reader,
 {
     debug_str: &'a DebugStr<R>,
+    debug_str_offsets: &'a DebugStrOffsets<R>,
+    debug_line_str: &'a DebugLineStr<R>,
     debug_line: &'a DebugLine<R>,
     debug_addr: &'a DebugAddr<R>,
-    debug_addr_base: DebugAddrBase<R::Offset>,
     rnglists: &'a RangeLists<R>,
     loclists: &'a LocationLists<R>,
     reachable: &'a HashSet<UnitSectionOffset>,
 }
 
 pub fn transform_dwarf(
-    target_config: TargetFrontendConfig,
+    isa: &dyn TargetIsa,
     di: &DebugInfoData,
     at: &ModuleAddressMap,
     vmctx_info: &ModuleVmctxInfo,
@@ -58,9 +59,10 @@ pub fn transform_dwarf(
 
     let context = DebugInputContext {
         debug_str: &di.dwarf.debug_str,
+        debug_str_offsets: &di.dwarf.debug_str_offsets,
+        debug_line_str: &di.dwarf.debug_line_str,
         debug_line: &di.dwarf.debug_line,
         debug_addr: &di.dwarf.debug_addr,
-        debug_addr_base: DebugAddrBase(0),
         rnglists: &di.dwarf.ranges,
         loclists: &di.dwarf.locations,
         reachable: &reachable,
@@ -69,9 +71,8 @@ pub fn transform_dwarf(
     let out_encoding = gimli::Encoding {
         format: gimli::Format::Dwarf32,
         // TODO: this should be configurable
-        // macOS doesn't seem to support DWARF > 3
-        version: 3,
-        address_size: target_config.pointer_bytes(),
+        version: 4,
+        address_size: isa.pointer_bytes(),
     };
 
     let mut out_strings = write::StringTable::default();
@@ -95,6 +96,7 @@ pub fn transform_dwarf(
             &mut out_units,
             &mut out_strings,
             &mut translated,
+            isa,
         )? {
             di_ref_map.insert(&header, id, ref_map);
             pending_di_refs.push((id, pending_refs));
@@ -111,6 +113,7 @@ pub fn transform_dwarf(
         out_encoding,
         &mut out_units,
         &mut out_strings,
+        isa,
     )?;
 
     Ok(write::Dwarf {

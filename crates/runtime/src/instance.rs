@@ -5,33 +5,32 @@
 use crate::export::Export;
 use crate::imports::Imports;
 use crate::jit_int::GdbJitImageRegistration;
-use crate::memory::LinearMemory;
-use crate::signalhandlers;
+use crate::memory::{DefaultMemoryCreator, RuntimeLinearMemory, RuntimeMemoryCreator};
 use crate::table::Table;
+use crate::traphandlers;
 use crate::traphandlers::{catch_traps, Trap};
 use crate::vmcontext::{
     VMBuiltinFunctionsArray, VMCallerCheckedAnyfunc, VMContext, VMFunctionBody, VMFunctionImport,
-    VMGlobalDefinition, VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMSharedSignatureIndex,
-    VMTableDefinition, VMTableImport,
+    VMGlobalDefinition, VMGlobalImport, VMInterrupts, VMMemoryDefinition, VMMemoryImport,
+    VMSharedSignatureIndex, VMTableDefinition, VMTableImport, VMTrampoline,
 };
-use crate::TrapRegistration;
+use crate::{ExportFunction, ExportGlobal, ExportMemory, ExportTable};
 use memoffset::offset_of;
 use more_asserts::assert_lt;
 use std::alloc::{self, Layout};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::{mem, ptr, slice};
 use thiserror::Error;
 use wasmtime_environ::entity::{packed_option::ReservedValue, BoxedSlice, EntityRef, PrimaryMap};
 use wasmtime_environ::wasm::{
-    DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex, ElemIndex,
-    FuncIndex, GlobalIndex, GlobalInit, MemoryIndex, SignatureIndex, TableIndex,
+    DataIndex, DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex,
+    ElemIndex, FuncIndex, GlobalIndex, GlobalInit, MemoryIndex, SignatureIndex, TableIndex,
 };
-use wasmtime_environ::{ir, DataInitializer, Module, TableElements, VMOffsets};
+use wasmtime_environ::{ir, DataInitializer, EntityIndex, Module, TableElements, VMOffsets};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -81,7 +80,7 @@ pub(crate) struct Instance {
     offsets: VMOffsets,
 
     /// WebAssembly linear memory data.
-    memories: BoxedSlice<DefinedMemoryIndex, LinearMemory>,
+    memories: BoxedSlice<DefinedMemoryIndex, Box<dyn RuntimeLinearMemory>>,
 
     /// WebAssembly table data.
     tables: BoxedSlice<DefinedTableIndex, Table>,
@@ -91,8 +90,15 @@ pub(crate) struct Instance {
     /// empty slice.
     passive_elements: RefCell<HashMap<ElemIndex, Box<[VMCallerCheckedAnyfunc]>>>,
 
+    /// Passive data segments from our module. As `data.drop`s happen, entries
+    /// get removed. A missing entry is considered equivalent to an empty slice.
+    passive_data: RefCell<HashMap<DataIndex, Arc<[u8]>>>,
+
     /// Pointers to functions in executable memory.
     finished_functions: BoxedSlice<DefinedFuncIndex, *const [VMFunctionBody]>,
+
+    /// Pointers to trampoline functions used to enter particular signatures
+    trampolines: HashMap<VMSharedSignatureIndex, VMTrampoline>,
 
     /// Hosts can store arbitrary per-instance information here.
     host_state: Box<dyn Any>,
@@ -103,9 +109,9 @@ pub(crate) struct Instance {
     /// Handler run when `SIGBUS`, `SIGFPE`, `SIGILL`, or `SIGSEGV` are caught by the instance thread.
     pub(crate) signal_handler: Cell<Option<Box<SignalHandler>>>,
 
-    /// Handle to our registration of traps so signals know what trap to return
-    /// when a segfault/sigill happens.
-    pub(crate) trap_registration: TrapRegistration,
+    /// Externally allocated data indicating how this instance will be
+    /// interrupted.
+    pub(crate) interrupts: Arc<VMInterrupts>,
 
     /// Additional context used by compiled wasm code. This field is last, and
     /// represents a dynamically-sized array that extends beyond the nominal
@@ -272,6 +278,11 @@ impl Instance {
         unsafe { self.vmctx_plus_offset(self.offsets.vmctx_builtin_functions_begin()) }
     }
 
+    /// Return a pointer to the interrupts structure
+    pub fn interrupts(&self) -> *mut *const VMInterrupts {
+        unsafe { self.vmctx_plus_offset(self.offsets.vmctx_interrupts()) }
+    }
+
     /// Return a reference to the vmctx used by compiled wasm code.
     pub fn vmctx(&self) -> &VMContext {
         &self.vmctx
@@ -293,11 +304,10 @@ impl Instance {
     }
 
     /// Lookup an export with the given export declaration.
-    pub fn lookup_by_declaration(&self, export: &wasmtime_environ::Export) -> Export {
+    pub fn lookup_by_declaration(&self, export: &EntityIndex) -> Export {
         match export {
-            wasmtime_environ::Export::Function(index) => {
-                let signature =
-                    self.module.local.signatures[self.module.local.functions[*index]].clone();
+            EntityIndex::Function(index) => {
+                let signature = self.signature_id(self.module.local.functions[*index]);
                 let (address, vmctx) =
                     if let Some(def_index) = self.module.local.defined_func_index(*index) {
                         (
@@ -308,13 +318,14 @@ impl Instance {
                         let import = self.imported_function(*index);
                         (import.body, import.vmctx)
                     };
-                Export::Function {
+                ExportFunction {
                     address,
                     signature,
                     vmctx,
                 }
+                .into()
             }
-            wasmtime_environ::Export::Table(index) => {
+            EntityIndex::Table(index) => {
                 let (definition, vmctx) =
                     if let Some(def_index) = self.module.local.defined_table_index(*index) {
                         (self.table_ptr(def_index), self.vmctx_ptr())
@@ -322,13 +333,14 @@ impl Instance {
                         let import = self.imported_table(*index);
                         (import.from, import.vmctx)
                     };
-                Export::Table {
+                ExportTable {
                     definition,
                     vmctx,
                     table: self.module.local.table_plans[*index].clone(),
                 }
+                .into()
             }
-            wasmtime_environ::Export::Memory(index) => {
+            EntityIndex::Memory(index) => {
                 let (definition, vmctx) =
                     if let Some(def_index) = self.module.local.defined_memory_index(*index) {
                         (self.memory_ptr(def_index), self.vmctx_ptr())
@@ -336,13 +348,14 @@ impl Instance {
                         let import = self.imported_memory(*index);
                         (import.from, import.vmctx)
                     };
-                Export::Memory {
+                ExportMemory {
                     definition,
                     vmctx,
                     memory: self.module.local.memory_plans[*index].clone(),
                 }
+                .into()
             }
-            wasmtime_environ::Export::Global(index) => Export::Global {
+            EntityIndex::Global(index) => ExportGlobal {
                 definition: if let Some(def_index) = self.module.local.defined_global_index(*index)
                 {
                     self.global_ptr(def_index)
@@ -351,60 +364,80 @@ impl Instance {
                 },
                 vmctx: self.vmctx_ptr(),
                 global: self.module.local.globals[*index],
-            },
+            }
+            .into(),
         }
     }
 
     /// Return an iterator over the exports of this instance.
     ///
-    /// Specifically, it provides access to the key-value pairs, where they keys
+    /// Specifically, it provides access to the key-value pairs, where the keys
     /// are export names, and the values are export declarations which can be
     /// resolved `lookup_by_declaration`.
-    pub fn exports(&self) -> indexmap::map::Iter<String, wasmtime_environ::Export> {
+    pub fn exports(&self) -> indexmap::map::Iter<String, EntityIndex> {
         self.module.exports.iter()
     }
 
     /// Return a reference to the custom state attached to this instance.
+    #[inline]
     pub fn host_state(&self) -> &dyn Any {
         &*self.host_state
     }
 
     /// Invoke the WebAssembly start function of the instance, if one is present.
-    fn invoke_start_function(&self) -> Result<(), InstantiationError> {
+    fn invoke_start_function(&self, max_wasm_stack: usize) -> Result<(), InstantiationError> {
         let start_index = match self.module.start_func {
             Some(idx) => idx,
             None => return Ok(()),
         };
 
-        let (callee_address, callee_vmctx) = match self.module.local.defined_func_index(start_index)
-        {
-            Some(defined_index) => {
-                let body = *self
-                    .finished_functions
-                    .get(defined_index)
-                    .expect("function index is out of bounds");
-                (body as *const _, self.vmctx_ptr())
-            }
-            None => {
-                assert_lt!(start_index.index(), self.module.imported_funcs.len());
-                let import = self.imported_function(start_index);
-                (import.body, import.vmctx)
-            }
-        };
+        self.invoke_function_index(start_index, max_wasm_stack)
+            .map_err(InstantiationError::StartTrap)
+    }
 
+    fn invoke_function_index(
+        &self,
+        callee_index: FuncIndex,
+        max_wasm_stack: usize,
+    ) -> Result<(), Trap> {
+        let (callee_address, callee_vmctx) =
+            match self.module.local.defined_func_index(callee_index) {
+                Some(defined_index) => {
+                    let body = *self
+                        .finished_functions
+                        .get(defined_index)
+                        .expect("function index is out of bounds");
+                    (body as *const _, self.vmctx_ptr())
+                }
+                None => {
+                    assert_lt!(callee_index.index(), self.module.local.num_imported_funcs);
+                    let import = self.imported_function(callee_index);
+                    (import.body, import.vmctx)
+                }
+            };
+
+        self.invoke_function(callee_vmctx, callee_address, max_wasm_stack)
+    }
+
+    fn invoke_function(
+        &self,
+        callee_vmctx: *mut VMContext,
+        callee_address: *const VMFunctionBody,
+        max_wasm_stack: usize,
+    ) -> Result<(), Trap> {
         // Make the call.
         unsafe {
-            catch_traps(callee_vmctx, || {
+            catch_traps(callee_vmctx, max_wasm_stack, || {
                 mem::transmute::<
                     *const VMFunctionBody,
                     unsafe extern "C" fn(*mut VMContext, *mut VMContext),
                 >(callee_address)(callee_vmctx, self.vmctx_ptr())
             })
-            .map_err(InstantiationError::StartTrap)
         }
     }
 
     /// Return the offset from the vmctx pointer to its containing Instance.
+    #[inline]
     pub(crate) fn vmctx_offset() -> isize {
         offset_of!(Self, vmctx) as isize
     }
@@ -590,7 +623,6 @@ impl Instance {
         dst: u32,
         src: u32,
         len: u32,
-        source_loc: ir::SourceLoc,
     ) -> Result<(), Trap> {
         // https://webassembly.github.io/bulk-memory-operations/core/exec/instructions.html#exec-table-init
 
@@ -606,7 +638,7 @@ impl Instance {
             .map_or(true, |n| n as usize > elem.len())
             || dst.checked_add(len).map_or(true, |m| m > table.size())
         {
-            return Err(Trap::wasm(source_loc, ir::TrapCode::TableOutOfBounds));
+            return Err(Trap::wasm(ir::TrapCode::TableOutOfBounds));
         }
 
         // TODO(#983): investigate replacing this get/set loop with a `memcpy`.
@@ -641,7 +673,6 @@ impl Instance {
         dst: u32,
         src: u32,
         len: u32,
-        source_loc: ir::SourceLoc,
     ) -> Result<(), Trap> {
         // https://webassembly.github.io/reference-types/core/exec/instructions.html#exec-memory-copy
 
@@ -654,7 +685,7 @@ impl Instance {
                 .checked_add(len)
                 .map_or(true, |m| m as usize > memory.current_length)
         {
-            return Err(Trap::wasm(source_loc, ir::TrapCode::HeapOutOfBounds));
+            return Err(Trap::wasm(ir::TrapCode::HeapOutOfBounds));
         }
 
         let dst = usize::try_from(dst).unwrap();
@@ -678,14 +709,13 @@ impl Instance {
         dst: u32,
         src: u32,
         len: u32,
-        source_loc: ir::SourceLoc,
     ) -> Result<(), Trap> {
         let import = self.imported_memory(memory_index);
         unsafe {
             let foreign_instance = (&*import.vmctx).instance();
             let foreign_memory = &*import.from;
             let foreign_index = foreign_instance.memory_index(foreign_memory);
-            foreign_instance.defined_memory_copy(foreign_index, dst, src, len, source_loc)
+            foreign_instance.defined_memory_copy(foreign_index, dst, src, len)
         }
     }
 
@@ -700,7 +730,6 @@ impl Instance {
         dst: u32,
         val: u32,
         len: u32,
-        source_loc: ir::SourceLoc,
     ) -> Result<(), Trap> {
         let memory = self.memory(memory_index);
 
@@ -708,7 +737,7 @@ impl Instance {
             .checked_add(len)
             .map_or(true, |m| m as usize > memory.current_length)
         {
-            return Err(Trap::wasm(source_loc, ir::TrapCode::HeapOutOfBounds));
+            return Err(Trap::wasm(ir::TrapCode::HeapOutOfBounds));
         }
 
         let dst = isize::try_from(dst).unwrap();
@@ -735,15 +764,64 @@ impl Instance {
         dst: u32,
         val: u32,
         len: u32,
-        source_loc: ir::SourceLoc,
     ) -> Result<(), Trap> {
         let import = self.imported_memory(memory_index);
         unsafe {
             let foreign_instance = (&*import.vmctx).instance();
             let foreign_memory = &*import.from;
             let foreign_index = foreign_instance.memory_index(foreign_memory);
-            foreign_instance.defined_memory_fill(foreign_index, dst, val, len, source_loc)
+            foreign_instance.defined_memory_fill(foreign_index, dst, val, len)
         }
+    }
+
+    /// Performs the `memory.init` operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `Trap` error if the destination range is out of this module's
+    /// memory's bounds or if the source range is outside the data segment's
+    /// bounds.
+    pub(crate) fn memory_init(
+        &self,
+        memory_index: MemoryIndex,
+        data_index: DataIndex,
+        dst: u32,
+        src: u32,
+        len: u32,
+    ) -> Result<(), Trap> {
+        // https://webassembly.github.io/bulk-memory-operations/core/exec/instructions.html#exec-memory-init
+
+        let memory = self.get_memory(memory_index);
+        let passive_data = self.passive_data.borrow();
+        let data = passive_data
+            .get(&data_index)
+            .map_or(&[][..], |data| &**data);
+
+        if src
+            .checked_add(len)
+            .map_or(true, |n| n as usize > data.len())
+            || dst
+                .checked_add(len)
+                .map_or(true, |m| m as usize > memory.current_length)
+        {
+            return Err(Trap::wasm(ir::TrapCode::HeapOutOfBounds));
+        }
+
+        let src_slice = &data[src as usize..(src + len) as usize];
+
+        unsafe {
+            let dst_start = memory.base.add(dst as usize);
+            let dst_slice = slice::from_raw_parts_mut(dst_start, len as usize);
+            dst_slice.copy_from_slice(src_slice);
+        }
+
+        Ok(())
+    }
+
+    /// Drop the given data segment, truncating its length to zero.
+    pub(crate) fn data_drop(&self, data_index: DataIndex) {
+        let mut passive_data = self.passive_data.borrow_mut();
+        passive_data.remove(&data_index);
     }
 
     /// Get a table by index regardless of whether it is locally-defined or an
@@ -795,17 +873,20 @@ impl InstanceHandle {
     /// safety.
     pub unsafe fn new(
         module: Arc<Module>,
-        trap_registration: TrapRegistration,
         finished_functions: BoxedSlice<DefinedFuncIndex, *const [VMFunctionBody]>,
+        trampolines: HashMap<VMSharedSignatureIndex, VMTrampoline>,
         imports: Imports,
+        mem_creator: Option<&dyn RuntimeMemoryCreator>,
         data_initializers: &[DataInitializer<'_>],
         vmshared_signatures: BoxedSlice<SignatureIndex, VMSharedSignatureIndex>,
         dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
         is_bulk_memory: bool,
         host_state: Box<dyn Any>,
+        interrupts: Arc<VMInterrupts>,
+        max_wasm_stack: usize,
     ) -> Result<Self, InstantiationError> {
         let tables = create_tables(&module);
-        let memories = create_memories(&module)?;
+        let memories = create_memories(&module, mem_creator.unwrap_or(&DefaultMemoryCreator {}))?;
 
         let vmctx_tables = tables
             .values()
@@ -815,13 +896,15 @@ impl InstanceHandle {
 
         let vmctx_memories = memories
             .values()
-            .map(LinearMemory::vmmemory)
+            .map(|a| a.vmmemory())
             .collect::<PrimaryMap<DefinedMemoryIndex, _>>()
             .into_boxed_slice();
 
         let vmctx_globals = create_globals(&module);
 
         let offsets = VMOffsets::new(mem::size_of::<*const u8>() as u8, &module.local);
+
+        let passive_data = RefCell::new(module.passive_data.clone());
 
         let handle = {
             let instance = Instance {
@@ -832,11 +915,13 @@ impl InstanceHandle {
                 memories,
                 tables,
                 passive_elements: Default::default(),
+                passive_data,
                 finished_functions,
+                trampolines,
                 dbg_jit_registration,
                 host_state,
                 signal_handler: Cell::new(None),
-                trap_registration,
+                interrupts,
                 vmctx: VMContext {},
             };
             let layout = instance.alloc_layout();
@@ -895,6 +980,7 @@ impl InstanceHandle {
             instance.builtin_functions_ptr() as *mut VMBuiltinFunctionsArray,
             VMBuiltinFunctionsArray::initialized(),
         );
+        *instance.interrupts() = &*instance.interrupts;
 
         // Check initializer bounds before initializing anything. Only do this
         // when bulk memory is disabled, since the bulk memory proposal changes
@@ -913,11 +999,11 @@ impl InstanceHandle {
 
         // Ensure that our signal handlers are ready for action.
         // TODO: Move these calls out of `InstanceHandle`.
-        signalhandlers::init();
+        traphandlers::init();
 
         // The WebAssembly spec specifies that the start function is
         // invoked automatically at instantiation time.
-        instance.invoke_start_function()?;
+        instance.invoke_start_function(max_wasm_stack)?;
 
         Ok(handle)
     }
@@ -962,7 +1048,7 @@ impl InstanceHandle {
     }
 
     /// Lookup an export with the given export declaration.
-    pub fn lookup_by_declaration(&self, export: &wasmtime_environ::Export) -> Export {
+    pub fn lookup_by_declaration(&self, export: &EntityIndex) -> Export {
         self.instance().lookup_by_declaration(export)
     }
 
@@ -971,7 +1057,7 @@ impl InstanceHandle {
     /// Specifically, it provides access to the key-value pairs, where the keys
     /// are export names, and the values are export declarations which can be
     /// resolved `lookup_by_declaration`.
-    pub fn exports(&self) -> indexmap::map::Iter<String, wasmtime_environ::Export> {
+    pub fn exports(&self) -> indexmap::map::Iter<String, EntityIndex> {
         self.instance().exports()
     }
 
@@ -1032,6 +1118,11 @@ impl InstanceHandle {
     /// Get a table defined locally within this module.
     pub fn get_defined_table(&self, index: DefinedTableIndex) -> &Table {
         self.instance().get_defined_table(index)
+    }
+
+    /// Gets the trampoline pre-registered for a particular signature
+    pub fn trampoline(&self, sig: VMSharedSignatureIndex) -> Option<VMTrampoline> {
+        self.instance().trampolines.get(&sig).cloned()
     }
 
     /// Return a reference to the contained `Instance`.
@@ -1142,7 +1233,7 @@ fn check_memory_init_bounds(
 
 /// Allocate memory for just the tables of the current module.
 fn create_tables(module: &Module) -> BoxedSlice<DefinedTableIndex, Table> {
-    let num_imports = module.imported_tables.len();
+    let num_imports = module.local.num_imported_tables;
     let mut tables: PrimaryMap<DefinedTableIndex, _> =
         PrimaryMap::with_capacity(module.local.table_plans.len() - num_imports);
     for table in &module.local.table_plans.values().as_slice()[num_imports..] {
@@ -1181,7 +1272,6 @@ fn initialize_tables(instance: &Instance) -> Result<(), InstantiationError> {
             .map_or(true, |end| end > table.size() as usize)
         {
             return Err(InstantiationError::Trap(Trap::wasm(
-                ir::SourceLoc::default(),
                 ir::TrapCode::HeapOutOfBounds,
             )));
         }
@@ -1228,12 +1318,17 @@ fn initialize_passive_elements(instance: &Instance) {
 /// Allocate memory for just the memories of the current module.
 fn create_memories(
     module: &Module,
-) -> Result<BoxedSlice<DefinedMemoryIndex, LinearMemory>, InstantiationError> {
-    let num_imports = module.imported_memories.len();
+    mem_creator: &dyn RuntimeMemoryCreator,
+) -> Result<BoxedSlice<DefinedMemoryIndex, Box<dyn RuntimeLinearMemory>>, InstantiationError> {
+    let num_imports = module.local.num_imported_memories;
     let mut memories: PrimaryMap<DefinedMemoryIndex, _> =
         PrimaryMap::with_capacity(module.local.memory_plans.len() - num_imports);
     for plan in &module.local.memory_plans.values().as_slice()[num_imports..] {
-        memories.push(LinearMemory::new(plan).map_err(InstantiationError::Resource)?);
+        memories.push(
+            mem_creator
+                .new_memory(plan)
+                .map_err(InstantiationError::Resource)?,
+        );
     }
     Ok(memories.into_boxed_slice())
 }
@@ -1252,7 +1347,6 @@ fn initialize_memories(
             .map_or(true, |end| end > memory.current_length)
         {
             return Err(InstantiationError::Trap(Trap::wasm(
-                ir::SourceLoc::default(),
                 ir::TrapCode::HeapOutOfBounds,
             )));
         }
@@ -1271,7 +1365,7 @@ fn initialize_memories(
 /// Allocate memory for just the globals of the current module,
 /// with initializers applied.
 fn create_globals(module: &Module) -> BoxedSlice<DefinedGlobalIndex, VMGlobalDefinition> {
-    let num_imports = module.imported_globals.len();
+    let num_imports = module.local.num_imported_globals;
     let mut vmctx_globals = PrimaryMap::with_capacity(module.local.globals.len() - num_imports);
 
     for _ in &module.local.globals.values().as_slice()[num_imports..] {
@@ -1283,7 +1377,7 @@ fn create_globals(module: &Module) -> BoxedSlice<DefinedGlobalIndex, VMGlobalDef
 
 fn initialize_globals(instance: &Instance) {
     let module = Arc::clone(&instance.module);
-    let num_imports = module.imported_globals.len();
+    let num_imports = module.local.num_imported_globals;
     for (index, global) in module.local.globals.iter().skip(num_imports) {
         let def_index = module.local.defined_global_index(index).unwrap();
         unsafe {
@@ -1327,9 +1421,9 @@ pub enum InstantiationError {
 
     /// A trap ocurred during instantiation, after linking.
     #[error("Trap occurred during instantiation")]
-    Trap(#[source] Trap),
+    Trap(Trap),
 
-    /// A compilation error occured.
+    /// A trap occurred while running the wasm start function.
     #[error("Trap occurred while invoking start function")]
-    StartTrap(#[source] Trap),
+    StartTrap(Trap),
 }

@@ -4,10 +4,11 @@
 
 use anyhow::Error;
 use faerie::{Artifact, Decl};
+use gimli::write::{Address, FrameTable};
 use more_asserts::assert_gt;
-use target_lexicon::{BinaryFormat, Triple};
-use wasmtime_environ::isa::TargetFrontendConfig;
-use wasmtime_environ::{ModuleAddressMap, ModuleVmctxInfo, ValueLabelsRanges};
+use target_lexicon::BinaryFormat;
+use wasmtime_environ::isa::{unwind::UnwindInfo, TargetIsa};
+use wasmtime_environ::{Compilation, ModuleAddressMap, ModuleVmctxInfo, ValueLabelsRanges};
 
 pub use crate::read_debuginfo::{read_debuginfo, DebugInfoData, WasmFileInfo};
 pub use crate::transform::transform_dwarf;
@@ -26,17 +27,43 @@ impl SymbolResolver for FunctionRelocResolver {
     }
 }
 
+fn create_frame_table<'a>(
+    isa: &dyn TargetIsa,
+    infos: impl Iterator<Item = &'a Option<UnwindInfo>>,
+) -> Option<FrameTable> {
+    let mut table = FrameTable::default();
+
+    let cie_id = table.add_cie(isa.create_systemv_cie()?);
+
+    for (i, info) in infos.enumerate() {
+        if let Some(UnwindInfo::SystemV(info)) = info {
+            table.add_fde(
+                cie_id,
+                info.to_fde(Address::Symbol {
+                    symbol: i,
+                    addend: 0,
+                }),
+            );
+        }
+    }
+
+    Some(table)
+}
+
 pub fn emit_debugsections(
     obj: &mut Artifact,
     vmctx_info: &ModuleVmctxInfo,
-    target_config: TargetFrontendConfig,
+    isa: &dyn TargetIsa,
     debuginfo_data: &DebugInfoData,
     at: &ModuleAddressMap,
     ranges: &ValueLabelsRanges,
+    compilation: &Compilation,
 ) -> Result<(), Error> {
     let resolver = FunctionRelocResolver {};
-    let dwarf = transform_dwarf(target_config, debuginfo_data, at, vmctx_info, ranges)?;
-    emit_dwarf(obj, dwarf, &resolver)?;
+    let dwarf = transform_dwarf(isa, debuginfo_data, at, vmctx_info, ranges)?;
+    let frame_table = create_frame_table(isa, compilation.into_iter().map(|f| &f.unwind_info));
+
+    emit_dwarf(obj, dwarf, &resolver, frame_table)?;
     Ok(())
 }
 
@@ -52,21 +79,21 @@ impl<'a> SymbolResolver for ImageRelocResolver<'a> {
 }
 
 pub fn emit_debugsections_image(
-    triple: Triple,
-    target_config: TargetFrontendConfig,
+    isa: &dyn TargetIsa,
     debuginfo_data: &DebugInfoData,
     vmctx_info: &ModuleVmctxInfo,
     at: &ModuleAddressMap,
     ranges: &ValueLabelsRanges,
     funcs: &[(*const u8, usize)],
+    compilation: &Compilation,
 ) -> Result<Vec<u8>, Error> {
     let func_offsets = &funcs
         .iter()
         .map(|(ptr, _)| *ptr as u64)
         .collect::<Vec<u64>>();
-    let mut obj = Artifact::new(triple, String::from("module"));
+    let mut obj = Artifact::new(isa.triple().clone(), String::from("module"));
     let resolver = ImageRelocResolver { func_offsets };
-    let dwarf = transform_dwarf(target_config, debuginfo_data, at, vmctx_info, ranges)?;
+    let dwarf = transform_dwarf(isa, debuginfo_data, at, vmctx_info, ranges)?;
 
     // Assuming all functions in the same code block, looking min/max of its range.
     assert_gt!(funcs.len(), 0);
@@ -80,7 +107,8 @@ pub fn emit_debugsections_image(
     let body = unsafe { std::slice::from_raw_parts(segment_body.0, segment_body.1) };
     obj.declare_with("all", Decl::function(), body.to_vec())?;
 
-    emit_dwarf(&mut obj, dwarf, &resolver)?;
+    let frame_table = create_frame_table(isa, compilation.into_iter().map(|f| &f.unwind_info));
+    emit_dwarf(&mut obj, dwarf, &resolver, frame_table)?;
 
     // LLDB is too "magical" about mach-o, generating elf
     let mut bytes = obj.emit_as(BinaryFormat::Elf)?;

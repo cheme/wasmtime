@@ -54,50 +54,23 @@ pub fn compile_to_obj(
     let mut obj = Artifact::new(isa.triple().clone(), artifact_name);
 
     // TODO: Expose the tunables as command-line flags.
-    let tunables = Tunables::default();
+    let mut tunables = Tunables::default();
+    tunables.debug_info = debug_info;
 
-    let (
-        module,
-        module_translation,
-        lazy_function_body_inputs,
-        lazy_data_initializers,
-        target_config,
-    ) = {
-        let environ = ModuleEnvironment::new(isa.frontend_config(), tunables);
+    let environ = ModuleEnvironment::new(isa.frontend_config(), &tunables);
 
-        let translation = environ
-            .translate(wasm)
-            .context("failed to translate module")?;
-
-        (
-            translation.module,
-            translation.module_translation.unwrap(),
-            translation.function_body_inputs,
-            translation.data_initializers,
-            translation.target_config,
-        )
-    };
+    let translation = environ
+        .translate(wasm)
+        .context("failed to translate module")?;
 
     // TODO: use the traps information
     let (compilation, relocations, address_transform, value_ranges, stack_slots, _traps) =
         match strategy {
-            Strategy::Auto | Strategy::Cranelift => Cranelift::compile_module(
-                &module,
-                &module_translation,
-                lazy_function_body_inputs,
-                &*isa,
-                debug_info,
-                cache_config,
-            ),
+            Strategy::Auto | Strategy::Cranelift => {
+                Cranelift::compile_module(&translation, &*isa, cache_config)
+            }
             #[cfg(feature = "lightbeam")]
-            Strategy::Lightbeam => Lightbeam::compile_module(
-                &module,
-                &module_translation,
-                lazy_function_body_inputs,
-                &*isa,
-                debug_info,
-                cache_config,
-            ),
+            Strategy::Lightbeam => Lightbeam::compile_module(&translation, &*isa, cache_config),
             #[cfg(not(feature = "lightbeam"))]
             Strategy::Lightbeam => bail!("lightbeam support not enabled"),
             other => bail!("unsupported compilation strategy {:?}", other),
@@ -109,7 +82,10 @@ pub fn compile_to_obj(
     }
 
     let module_vmctx_info = {
-        let ofs = VMOffsets::new(target_config.pointer_bytes(), &module.local);
+        let ofs = VMOffsets::new(
+            translation.target_config.pointer_bytes(),
+            &translation.module.local,
+        );
         ModuleVmctxInfo {
             memory_offset: if ofs.num_imported_memories > 0 {
                 ModuleMemoryOffset::Imported(ofs.vmctx_vmmemory_import(MemoryIndex::new(0)))
@@ -126,24 +102,25 @@ pub fn compile_to_obj(
 
     emit_module(
         &mut obj,
-        &module,
+        &translation.module,
         &compilation,
         &relocations,
-        &lazy_data_initializers,
-        &target_config,
+        &translation.data_initializers,
+        &translation.target_config,
     )
     .map_err(|e| anyhow!(e))
     .context("failed to emit module")?;
 
     if debug_info {
-        let debug_data = read_debuginfo(wasm);
+        let debug_data = read_debuginfo(wasm).context("failed to emit DWARF")?;
         emit_debugsections(
             &mut obj,
             &module_vmctx_info,
-            target_config,
+            &*isa,
             &debug_data,
             &address_transform,
             &value_ranges,
+            &compilation,
         )
         .context("failed to emit debug sections")?;
     }

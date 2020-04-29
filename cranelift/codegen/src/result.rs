@@ -20,7 +20,7 @@ pub enum CodegenError {
     /// Cranelift can compile very large and complicated functions, but the [implementation has
     /// limits][limits] that cause compilation to fail when they are exceeded.
     ///
-    /// [limits]: https://cranelift.readthedocs.io/en/latest/ir.html#implementation-limits
+    /// [limits]: https://github.com/bytecodealliance/wasmtime/blob/master/cranelift/docs/ir.md#implementation-limits
     #[error("Implementation limit exceeded")]
     ImplLimitExceeded,
 
@@ -30,6 +30,11 @@ pub enum CodegenError {
     /// is exceeded, compilation fails.
     #[error("Code for function is too large")]
     CodeTooLarge,
+
+    /// A failure to map Cranelift register representation to a DWARF register representation.
+    #[cfg(feature = "unwind")]
+    #[error("Register mapping error")]
+    RegisterMappingError(crate::isa::unwind::systemv::RegisterMappingError),
 }
 
 /// A convenient alias for a `Result` that uses `CodegenError` as the error type.

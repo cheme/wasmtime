@@ -2,13 +2,13 @@
 
 use crate::memory::Memory;
 use cranelift_codegen::binemit::{
-    Addend, CodeOffset, NullTrapSink, Reloc, RelocSink, Stackmap, StackmapSink,
+    Addend, CodeOffset, Reloc, RelocSink, Stackmap, StackmapSink, TrapSink,
 };
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::{self, ir, settings};
 use cranelift_module::{
     Backend, DataContext, DataDescription, DataId, FuncId, Init, Linkage, ModuleNamespace,
-    ModuleResult, TrapSite,
+    ModuleResult,
 };
 use cranelift_native;
 #[cfg(not(windows))]
@@ -271,14 +271,18 @@ impl<'simple_jit_backend> Backend for SimpleJITBackend {
         // Nothing to do.
     }
 
-    fn define_function(
+    fn define_function<TS>(
         &mut self,
         _id: FuncId,
         name: &str,
         ctx: &cranelift_codegen::Context,
         _namespace: &ModuleNamespace<Self>,
         code_size: u32,
-    ) -> ModuleResult<Self::CompiledFunction> {
+        trap_sink: &mut TS,
+    ) -> ModuleResult<Self::CompiledFunction>
+    where
+        TS: TrapSink,
+    {
         let size = code_size as usize;
         let ptr = self
             .memory
@@ -289,16 +293,13 @@ impl<'simple_jit_backend> Backend for SimpleJITBackend {
         self.record_function_for_perf(ptr, size, name);
 
         let mut reloc_sink = SimpleJITRelocSink::new();
-        // Ignore traps for now. For now, frontends should just avoid generating code
-        // that traps.
-        let mut trap_sink = NullTrapSink {};
         let mut stackmap_sink = SimpleJITStackmapSink::new();
         unsafe {
             ctx.emit_to_memory(
                 &*self.isa,
                 ptr,
                 &mut reloc_sink,
-                &mut trap_sink,
+                trap_sink,
                 &mut stackmap_sink,
             )
         };
@@ -316,7 +317,6 @@ impl<'simple_jit_backend> Backend for SimpleJITBackend {
         name: &str,
         bytes: &[u8],
         _namespace: &ModuleNamespace<Self>,
-        _traps: Vec<TrapSite>,
     ) -> ModuleResult<Self::CompiledFunction> {
         let size = bytes.len();
         let ptr = self
@@ -631,6 +631,7 @@ impl RelocSink for SimpleJITRelocSink {
     fn reloc_external(
         &mut self,
         offset: CodeOffset,
+        _srcloc: ir::SourceLoc,
         reloc: Reloc,
         name: &ir::ExternalName,
         addend: Addend,

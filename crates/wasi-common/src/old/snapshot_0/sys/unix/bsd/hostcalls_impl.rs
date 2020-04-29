@@ -1,21 +1,18 @@
 use crate::old::snapshot_0::hostcalls_impl::PathGet;
-use crate::old::snapshot_0::{Error, Result};
+use crate::old::snapshot_0::wasi::{WasiError, WasiResult};
 use std::os::unix::prelude::AsRawFd;
 
-pub(crate) fn path_unlink_file(resolved: PathGet) -> Result<()> {
-    use yanix::{
-        file::{unlinkat, AtFlag},
-        Errno, YanixError,
-    };
-    unsafe {
+pub(crate) fn path_unlink_file(resolved: PathGet) -> WasiResult<()> {
+    use yanix::file::{unlinkat, AtFlag};
+    match unsafe {
         unlinkat(
             resolved.dirfd().as_raw_fd(),
             resolved.path(),
             AtFlag::empty(),
         )
-    }
-    .map_err(|err| {
-        if let YanixError::Errno(mut errno) = err {
+    } {
+        Err(err) => {
+            let raw_errno = err.raw_os_error().unwrap();
             // Non-Linux implementations may return EPERM when attempting to remove a
             // directory without REMOVEDIR. While that's what POSIX specifies, it's
             // less useful. Adjust this to EISDIR. It doesn't matter that this is not
@@ -25,129 +22,123 @@ pub(crate) fn path_unlink_file(resolved: PathGet) -> Result<()> {
             // turned out differently.
             use yanix::file::{fstatat, FileType};
 
-            if errno == Errno::EPERM {
-                if let Ok(stat) = unsafe {
+            if raw_errno == libc::EPERM {
+                match unsafe {
                     fstatat(
                         resolved.dirfd().as_raw_fd(),
                         resolved.path(),
                         AtFlag::SYMLINK_NOFOLLOW,
                     )
                 } {
-                    if FileType::from_stat_st_mode(stat.st_mode) == FileType::Directory {
-                        errno = Errno::EISDIR;
+                    Ok(stat) => {
+                        if FileType::from_stat_st_mode(stat.st_mode) == FileType::Directory {
+                            return Err(WasiError::EISDIR);
+                        }
                     }
-                } else {
-                    errno = Errno::last();
+                    Err(err) => {
+                        log::debug!("path_unlink_file fstatat error: {:?}", err);
+                    }
                 }
             }
-            errno.into()
-        } else {
-            err
+
+            Err(err.into())
         }
-    })
-    .map_err(Into::into)
+        Ok(()) => Ok(()),
+    }
 }
 
-pub(crate) fn path_symlink(old_path: &str, resolved: PathGet) -> Result<()> {
-    use yanix::{
-        file::{fstatat, symlinkat, AtFlag},
-        Errno, YanixError,
-    };
+pub(crate) fn path_symlink(old_path: &str, resolved: PathGet) -> WasiResult<()> {
+    use yanix::file::{fstatat, symlinkat, AtFlag};
 
     log::debug!("path_symlink old_path = {:?}", old_path);
     log::debug!("path_symlink resolved = {:?}", resolved);
 
-    unsafe { symlinkat(old_path, resolved.dirfd().as_raw_fd(), resolved.path()) }.or_else(|err| {
-        if let YanixError::Errno(errno) = err {
-            match errno {
-                Errno::ENOTDIR => {
-                    // On BSD, symlinkat returns ENOTDIR when it should in fact
-                    // return a EEXIST. It seems that it gets confused with by
-                    // the trailing slash in the target path. Thus, we strip
-                    // the trailing slash and check if the path exists, and
-                    // adjust the error code appropriately.
-                    let new_path = resolved.path().trim_end_matches('/');
-                    if let Ok(_) = unsafe {
-                        fstatat(
-                            resolved.dirfd().as_raw_fd(),
-                            new_path,
-                            AtFlag::SYMLINK_NOFOLLOW,
-                        )
-                    } {
-                        Err(Error::EEXIST)
-                    } else {
-                        Err(Error::ENOTDIR)
+    match unsafe { symlinkat(old_path, resolved.dirfd().as_raw_fd(), resolved.path()) } {
+        Err(err) => {
+            if err.raw_os_error().unwrap() == libc::ENOTDIR {
+                // On BSD, symlinkat returns ENOTDIR when it should in fact
+                // return a EEXIST. It seems that it gets confused with by
+                // the trailing slash in the target path. Thus, we strip
+                // the trailing slash and check if the path exists, and
+                // adjust the error code appropriately.
+                let new_path = resolved.path().trim_end_matches('/');
+                match unsafe {
+                    fstatat(
+                        resolved.dirfd().as_raw_fd(),
+                        new_path,
+                        AtFlag::SYMLINK_NOFOLLOW,
+                    )
+                } {
+                    Ok(_) => return Err(WasiError::EEXIST),
+                    Err(err) => {
+                        log::debug!("path_symlink fstatat error: {:?}", err);
                     }
                 }
-                x => Err(x.into()),
             }
-        } else {
             Err(err.into())
         }
-    })
+        Ok(()) => Ok(()),
+    }
 }
 
-pub(crate) fn path_rename(resolved_old: PathGet, resolved_new: PathGet) -> Result<()> {
-    use yanix::{
-        file::{fstatat, renameat, AtFlag},
-        Errno, YanixError,
-    };
-    unsafe {
+pub(crate) fn path_rename(resolved_old: PathGet, resolved_new: PathGet) -> WasiResult<()> {
+    use yanix::file::{fstatat, renameat, AtFlag};
+    match unsafe {
         renameat(
             resolved_old.dirfd().as_raw_fd(),
             resolved_old.path(),
             resolved_new.dirfd().as_raw_fd(),
             resolved_new.path(),
         )
-    }
-    .or_else(|err| {
-        // Currently, this is verified to be correct on macOS, where
-        // ENOENT can be returned in case when we try to rename a file
-        // into a name with a trailing slash. On macOS, if the latter does
-        // not exist, an ENOENT is thrown, whereas on Linux we observe the
-        // correct behaviour of throwing an ENOTDIR since the destination is
-        // indeed not a directory.
-        //
-        // TODO
-        // Verify on other BSD-based OSes.
-        if let YanixError::Errno(errno) = err {
-            match errno {
-                Errno::ENOENT => {
-                    // check if the source path exists
-                    if let Ok(_) = unsafe {
-                        fstatat(
-                            resolved_old.dirfd().as_raw_fd(),
-                            resolved_old.path(),
-                            AtFlag::SYMLINK_NOFOLLOW,
-                        )
-                    } {
+    } {
+        Err(err) => {
+            // Currently, this is verified to be correct on macOS, where
+            // ENOENT can be returned in case when we try to rename a file
+            // into a name with a trailing slash. On macOS, if the latter does
+            // not exist, an ENOENT is thrown, whereas on Linux we observe the
+            // correct behaviour of throwing an ENOTDIR since the destination is
+            // indeed not a directory.
+            //
+            // TODO
+            // Verify on other BSD-based OSes.
+            if err.raw_os_error().unwrap() == libc::ENOENT {
+                // check if the source path exists
+                match unsafe {
+                    fstatat(
+                        resolved_old.dirfd().as_raw_fd(),
+                        resolved_old.path(),
+                        AtFlag::SYMLINK_NOFOLLOW,
+                    )
+                } {
+                    Ok(_) => {
                         // check if destination contains a trailing slash
                         if resolved_new.path().contains('/') {
-                            Err(Error::ENOTDIR)
+                            return Err(WasiError::ENOTDIR);
                         } else {
-                            Err(Error::ENOENT)
+                            return Err(WasiError::ENOENT);
                         }
-                    } else {
-                        Err(Error::ENOENT)
+                    }
+                    Err(err) => {
+                        log::debug!("path_rename fstatat error: {:?}", err);
                     }
                 }
-                x => Err(x.into()),
             }
-        } else {
+
             Err(err.into())
         }
-    })
+        Ok(()) => Ok(()),
+    }
 }
 
 pub(crate) mod fd_readdir_impl {
-    use crate::old::snapshot_0::sys::fdentry_impl::OsHandle;
-    use crate::old::snapshot_0::Result;
+    use crate::old::snapshot_0::sys::entry_impl::OsHandle;
+    use crate::old::snapshot_0::wasi::WasiResult;
     use std::sync::{Mutex, MutexGuard};
     use yanix::dir::Dir;
 
     pub(crate) fn get_dir_from_os_handle<'a>(
         os_handle: &'a mut OsHandle,
-    ) -> Result<MutexGuard<'a, Dir>> {
+    ) -> WasiResult<MutexGuard<'a, Dir>> {
         let dir = match os_handle.dir {
             Some(ref mut dir) => dir,
             None => {

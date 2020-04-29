@@ -7,7 +7,6 @@
 
 use super::HashMap;
 use crate::data_context::DataContext;
-use crate::traps::TrapSite;
 use crate::Backend;
 use cranelift_codegen::binemit::{self, CodeInfo};
 use cranelift_codegen::entity::{entity_impl, PrimaryMap};
@@ -58,6 +57,11 @@ pub enum Linkage {
     Local,
     /// Defined inside the module, visible outside it, and may be preempted.
     Preemptible,
+    /// Defined inside the module, visible inside the current static linkage unit, but not outside.
+    ///
+    /// A static linkage unit is the combination of all object files passed to a linker to create
+    /// an executable or dynamic library.
+    Hidden,
     /// Defined inside the module, and visible outside it.
     Export,
 }
@@ -66,14 +70,20 @@ impl Linkage {
     fn merge(a: Self, b: Self) -> Self {
         match a {
             Self::Export => Self::Export,
+            Self::Hidden => match b {
+                Self::Export => Self::Export,
+                Self::Preemptible => Self::Preemptible,
+                _ => Self::Hidden,
+            },
             Self::Preemptible => match b {
                 Self::Export => Self::Export,
                 _ => Self::Preemptible,
             },
             Self::Local => match b {
                 Self::Export => Self::Export,
+                Self::Hidden => Self::Hidden,
                 Self::Preemptible => Self::Preemptible,
-                _ => Self::Local,
+                Self::Local | Self::Import => Self::Local,
             },
             Self::Import => b,
         }
@@ -83,7 +93,7 @@ impl Linkage {
     pub fn is_definable(self) -> bool {
         match self {
             Self::Import => false,
-            Self::Local | Self::Preemptible | Self::Export => true,
+            Self::Local | Self::Preemptible | Self::Hidden | Self::Export => true,
         }
     }
 
@@ -91,7 +101,7 @@ impl Linkage {
     pub fn is_final(self) -> bool {
         match self {
             Self::Import | Self::Preemptible => false,
-            Self::Local | Self::Export => true,
+            Self::Local | Self::Hidden | Self::Export => true,
         }
     }
 }
@@ -149,7 +159,7 @@ pub enum ModuleError {
     Compilation(#[from] CodegenError),
     /// Wraps a generic error from a backend
     #[error("Backend error: {0}")]
-    Backend(String),
+    Backend(#[source] anyhow::Error),
 }
 
 /// A convenient alias for a `Result` that uses `ModuleError` as the error type.
@@ -350,6 +360,10 @@ where
     functions_to_finalize: Vec<FuncId>,
     data_objects_to_finalize: Vec<DataId>,
     backend: B,
+}
+
+pub struct ModuleCompiledFunction {
+    pub size: binemit::CodeOffset,
 }
 
 impl<B> Module<B>
@@ -553,11 +567,15 @@ where
     /// Returns the size of the function's code and constant data.
     ///
     /// Note: After calling this function the given `Context` will contain the compiled function.
-    pub fn define_function(
+    pub fn define_function<TS>(
         &mut self,
         func: FuncId,
         ctx: &mut Context,
-    ) -> ModuleResult<binemit::CodeOffset> {
+        trap_sink: &mut TS,
+    ) -> ModuleResult<ModuleCompiledFunction>
+    where
+        TS: binemit::TrapSink,
+    {
         info!(
             "defining function {}: {}",
             func,
@@ -572,7 +590,7 @@ where
             return Err(ModuleError::InvalidImportDefinition(info.decl.name.clone()));
         }
 
-        let compiled = Some(self.backend.define_function(
+        let compiled = self.backend.define_function(
             func,
             &info.decl.name,
             ctx,
@@ -580,11 +598,12 @@ where
                 contents: &self.contents,
             },
             total_size,
-        )?);
+            trap_sink,
+        )?;
 
-        self.contents.functions[func].compiled = compiled;
+        self.contents.functions[func].compiled = Some(compiled);
         self.functions_to_finalize.push(func);
-        Ok(total_size)
+        Ok(ModuleCompiledFunction { size: total_size })
     }
 
     /// Define a function, taking the function body from the given `bytes`.
@@ -598,8 +617,7 @@ where
         &mut self,
         func: FuncId,
         bytes: &[u8],
-        traps: Vec<TrapSite>,
-    ) -> ModuleResult<binemit::CodeOffset> {
+    ) -> ModuleResult<ModuleCompiledFunction> {
         info!("defining function {} with bytes", func);
         let info = &self.contents.functions[func];
         if info.compiled.is_some() {
@@ -614,19 +632,18 @@ where
             _ => Err(ModuleError::FunctionTooLarge(info.decl.name.clone()))?,
         };
 
-        let compiled = Some(self.backend.define_function_bytes(
+        let compiled = self.backend.define_function_bytes(
             func,
             &info.decl.name,
             bytes,
             &ModuleNamespace::<B> {
                 contents: &self.contents,
             },
-            traps,
-        )?);
+        )?;
 
-        self.contents.functions[func].compiled = compiled;
+        self.contents.functions[func].compiled = Some(compiled);
         self.functions_to_finalize.push(func);
-        Ok(total_size)
+        Ok(ModuleCompiledFunction { size: total_size })
     }
 
     /// Define a data object, producing the data contents from the given `DataContext`.

@@ -13,7 +13,7 @@ pub mod settings {
 }
 
 pub mod isa {
-    pub use cranelift_codegen::isa::{CallConv, RegUnit, TargetFrontendConfig, TargetIsa};
+    pub use cranelift_codegen::isa::{unwind, CallConv, RegUnit, TargetFrontendConfig, TargetIsa};
 }
 
 pub mod entity {
@@ -22,7 +22,7 @@ pub mod entity {
 
 pub mod wasm {
     pub use cranelift_wasm::{
-        get_vmctx_value_label, DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex,
+        get_vmctx_value_label, DataIndex, DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex,
         DefinedTableIndex, ElemIndex, FuncIndex, Global, GlobalIndex, GlobalInit, Memory,
         MemoryIndex, SignatureIndex, Table, TableElementType, TableIndex,
     };
