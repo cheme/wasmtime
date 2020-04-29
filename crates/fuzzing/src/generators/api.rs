@@ -22,6 +22,7 @@ use wasmparser::*;
 #[derive(Arbitrary, Debug)]
 struct Swarm {
     config_debug_info: bool,
+    config_interruptable: bool,
     module_new: bool,
     module_drop: bool,
     instance_new: bool,
@@ -35,6 +36,7 @@ struct Swarm {
 pub enum ApiCall {
     ConfigNew,
     ConfigDebugInfo(bool),
+    ConfigInterruptable(bool),
     EngineNew,
     StoreNew,
     ModuleNew { id: usize, wasm: super::WasmOptTtf },
@@ -59,9 +61,6 @@ struct Scope {
     /// The rough predicted maximum RSS of executing all of our generated API
     /// calls thus far.
     predicted_rss: usize,
-
-    /// The number of calls of an exported function from an instance.
-    num_export_calls: usize,
 }
 
 impl Scope {
@@ -93,12 +92,15 @@ impl Arbitrary for ApiCalls {
         let mut scope = Scope::default();
         let max_rss = 1 << 30; // 1GB
 
-        // Calling an exported function of a `wasm-opt -ttf` module tends to
-        // take about 20ms. Limit their number to 100, or ~2s, so that we don't
-        // get too close to our 3s timeout.
-        let max_export_calls = 100;
+        // Total limit on number of API calls we'll generate. This exists to
+        // avoid libFuzzer timeouts.
+        let max_calls = 100;
 
         for _ in 0..input.arbitrary_len::<ApiCall>()? {
+            if calls.len() > max_calls {
+                break;
+            }
+
             let mut choices: Vec<fn(_, &mut Scope) -> arbitrary::Result<ApiCall>> = vec![];
 
             if swarm.module_new {
@@ -137,12 +139,8 @@ impl Arbitrary for ApiCalls {
                     Ok(InstanceDrop { id })
                 });
             }
-            if swarm.call_exported_func
-                && scope.num_export_calls < max_export_calls
-                && !scope.instances.is_empty()
-            {
+            if swarm.call_exported_func && !scope.instances.is_empty() {
                 choices.push(|input, scope| {
-                    scope.num_export_calls += 1;
                     let instances: Vec<_> = scope.instances.keys().collect();
                     let instance = **input.choose(&instances)?;
                     let nth = usize::arbitrary(input)?;
@@ -167,9 +165,10 @@ impl Arbitrary for ApiCalls {
                 // minimum size.
                 arbitrary::size_hint::and(
                     <Swarm as Arbitrary>::size_hint(depth),
-                    // `arbitrary_config` uses two bools when
-                    // `swarm.config_debug_info` is true.
-                    <(bool, bool) as Arbitrary>::size_hint(depth),
+                    // `arbitrary_config` uses four bools:
+                    // 2 when `swarm.config_debug_info` is true
+                    // 2 when `swarm.config_interruptable` is true
+                    <(bool, bool, bool, bool) as Arbitrary>::size_hint(depth),
                 ),
                 // We can generate arbitrary `WasmOptTtf` instances, which have
                 // no upper bound on the number of bytes they consume. This sets
@@ -189,6 +188,10 @@ fn arbitrary_config(
 
     if swarm.config_debug_info && bool::arbitrary(input)? {
         calls.push(ConfigDebugInfo(bool::arbitrary(input)?));
+    }
+
+    if swarm.config_interruptable && bool::arbitrary(input)? {
+        calls.push(ConfigInterruptable(bool::arbitrary(input)?));
     }
 
     // TODO: flags, features, and compilation strategy.

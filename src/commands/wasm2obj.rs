@@ -11,8 +11,6 @@ use std::{
 use structopt::{clap::AppSettings, StructOpt};
 use target_lexicon::Triple;
 use wasmtime_environ::CacheConfig;
-#[cfg(feature = "lightbeam")]
-use wasmtime_environ::Lightbeam;
 
 /// The after help text for the `wasm2obj` command.
 pub const WASM2OBJ_AFTER_HELP: &str = "The translation is dependent on the environment chosen.\n\
@@ -54,11 +52,11 @@ impl WasmToObjCommand {
     }
 
     fn handle_module(&self) -> Result<()> {
-        if self.common.debug {
-            pretty_env_logger::init();
-        } else {
+        if self.common.log_to_files {
             let prefix = "wasm2obj.dbg.";
             init_file_per_thread_logger(prefix);
+        } else {
+            pretty_env_logger::init();
         }
 
         let cache_config = if self.common.disable_cache {

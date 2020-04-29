@@ -1,21 +1,24 @@
 #![allow(non_camel_case_types)]
 #![allow(unused_unsafe)]
 use crate::old::snapshot_0::hostcalls_impl::{ClockEventData, FdEventData};
-use crate::old::snapshot_0::{wasi, Error, Result};
+use crate::old::snapshot_0::wasi::{self, WasiError, WasiResult};
+use std::io;
 use yanix::clock::{clock_getres, clock_gettime, ClockId};
 
-fn wasi_clock_id_to_unix(clock_id: wasi::__wasi_clockid_t) -> Result<ClockId> {
+fn wasi_clock_id_to_unix(clock_id: wasi::__wasi_clockid_t) -> WasiResult<ClockId> {
     // convert the supported clocks to libc types, or return EINVAL
     match clock_id {
         wasi::__WASI_CLOCKID_REALTIME => Ok(ClockId::Realtime),
         wasi::__WASI_CLOCKID_MONOTONIC => Ok(ClockId::Monotonic),
         wasi::__WASI_CLOCKID_PROCESS_CPUTIME_ID => Ok(ClockId::ProcessCPUTime),
         wasi::__WASI_CLOCKID_THREAD_CPUTIME_ID => Ok(ClockId::ThreadCPUTime),
-        _ => Err(Error::EINVAL),
+        _ => Err(WasiError::EINVAL),
     }
 }
 
-pub(crate) fn clock_res_get(clock_id: wasi::__wasi_clockid_t) -> Result<wasi::__wasi_timestamp_t> {
+pub(crate) fn clock_res_get(
+    clock_id: wasi::__wasi_clockid_t,
+) -> WasiResult<wasi::__wasi_timestamp_t> {
     let clock_id = wasi_clock_id_to_unix(clock_id)?;
     let timespec = clock_getres(clock_id)?;
 
@@ -25,18 +28,20 @@ pub(crate) fn clock_res_get(clock_id: wasi::__wasi_clockid_t) -> Result<wasi::__
     (timespec.tv_sec as wasi::__wasi_timestamp_t)
         .checked_mul(1_000_000_000)
         .and_then(|sec_ns| sec_ns.checked_add(timespec.tv_nsec as wasi::__wasi_timestamp_t))
-        .map_or(Err(Error::EOVERFLOW), |resolution| {
+        .map_or(Err(WasiError::EOVERFLOW), |resolution| {
             // a supported clock can never return zero; this case will probably never get hit, but
             // make sure we follow the spec
             if resolution == 0 {
-                Err(Error::EINVAL)
+                Err(WasiError::EINVAL)
             } else {
                 Ok(resolution)
             }
         })
 }
 
-pub(crate) fn clock_time_get(clock_id: wasi::__wasi_clockid_t) -> Result<wasi::__wasi_timestamp_t> {
+pub(crate) fn clock_time_get(
+    clock_id: wasi::__wasi_clockid_t,
+) -> WasiResult<wasi::__wasi_timestamp_t> {
     let clock_id = wasi_clock_id_to_unix(clock_id)?;
     let timespec = clock_gettime(clock_id)?;
 
@@ -45,19 +50,16 @@ pub(crate) fn clock_time_get(clock_id: wasi::__wasi_clockid_t) -> Result<wasi::_
     (timespec.tv_sec as wasi::__wasi_timestamp_t)
         .checked_mul(1_000_000_000)
         .and_then(|sec_ns| sec_ns.checked_add(timespec.tv_nsec as wasi::__wasi_timestamp_t))
-        .map_or(Err(Error::EOVERFLOW), Ok)
+        .map_or(Err(WasiError::EOVERFLOW), Ok)
 }
 
 pub(crate) fn poll_oneoff(
     timeout: Option<ClockEventData>,
     fd_events: Vec<FdEventData>,
     events: &mut Vec<wasi::__wasi_event_t>,
-) -> Result<()> {
+) -> WasiResult<()> {
     use std::{convert::TryInto, os::unix::prelude::AsRawFd};
-    use yanix::{
-        poll::{poll, PollFd, PollFlags},
-        Errno,
-    };
+    use yanix::poll::{poll, PollFd, PollFlags};
 
     if fd_events.is_empty() && timeout.is_none() {
         return Ok(());
@@ -88,10 +90,11 @@ pub(crate) fn poll_oneoff(
     let ready = loop {
         match poll(&mut poll_fds, poll_timeout) {
             Err(_) => {
-                if Errno::last() == Errno::EINTR {
+                let last_err = io::Error::last_os_error();
+                if last_err.raw_os_error().unwrap() == libc::EINTR {
                     continue;
                 }
-                return Err(Errno::last().into());
+                return Err(last_err.into());
             }
             Ok(ready) => break ready,
         }
@@ -123,7 +126,7 @@ fn poll_oneoff_handle_timeout_event(
 fn poll_oneoff_handle_fd_event<'a>(
     ready_events: impl Iterator<Item = (FdEventData<'a>, yanix::poll::PollFd)>,
     events: &mut Vec<wasi::__wasi_event_t>,
-) -> Result<()> {
+) -> WasiResult<()> {
     use std::{convert::TryInto, os::unix::prelude::AsRawFd};
     use yanix::{file::fionread, poll::PollFlags};
 

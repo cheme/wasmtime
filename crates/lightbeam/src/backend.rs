@@ -5404,6 +5404,8 @@ impl<'this, M: ModuleContext> Context<'this, M> {
                     .unwrap()
                     .0) as u32
                 + 2,
+            // Passing a default location here, since until proven otherwise, it's not used.
+            ir::SourceLoc::default(),
             binemit::Reloc::Abs8,
             name,
             0,
@@ -5531,7 +5533,7 @@ impl<'this, M: ModuleContext> Context<'this, M> {
             slice = rest;
         }
 
-        mem::replace(&mut self.block_state.stack, stack);
+        let _ = mem::replace(&mut self.block_state.stack, stack);
         Ok(())
     }
 

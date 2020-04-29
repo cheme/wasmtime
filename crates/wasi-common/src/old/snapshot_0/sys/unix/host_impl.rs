@@ -3,98 +3,103 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 use crate::old::snapshot_0::host::FileType;
-use crate::old::snapshot_0::{
-    error::FromRawOsError, helpers, sys::unix::sys_impl, wasi, Error, Result,
-};
+use crate::old::snapshot_0::wasi::{self, WasiError, WasiResult};
+use crate::old::snapshot_0::{helpers, sys::unix::sys_impl};
 use std::ffi::OsStr;
+use std::io;
 use std::os::unix::prelude::OsStrExt;
-use yanix::{file::OFlag, Errno};
+use yanix::file::OFlag;
 
 pub(crate) use sys_impl::host_impl::*;
 
-impl FromRawOsError for Error {
-    fn from_raw_os_error(code: i32) -> Self {
-        Self::from(Errno::from_i32(code))
-    }
-}
-
-impl From<Errno> for Error {
-    fn from(errno: Errno) -> Self {
-        match errno {
-            Errno::EPERM => Self::EPERM,
-            Errno::ENOENT => Self::ENOENT,
-            Errno::ESRCH => Self::ESRCH,
-            Errno::EINTR => Self::EINTR,
-            Errno::EIO => Self::EIO,
-            Errno::ENXIO => Self::ENXIO,
-            Errno::E2BIG => Self::E2BIG,
-            Errno::ENOEXEC => Self::ENOEXEC,
-            Errno::EBADF => Self::EBADF,
-            Errno::ECHILD => Self::ECHILD,
-            Errno::EAGAIN => Self::EAGAIN,
-            Errno::ENOMEM => Self::ENOMEM,
-            Errno::EACCES => Self::EACCES,
-            Errno::EFAULT => Self::EFAULT,
-            Errno::EBUSY => Self::EBUSY,
-            Errno::EEXIST => Self::EEXIST,
-            Errno::EXDEV => Self::EXDEV,
-            Errno::ENODEV => Self::ENODEV,
-            Errno::ENOTDIR => Self::ENOTDIR,
-            Errno::EISDIR => Self::EISDIR,
-            Errno::EINVAL => Self::EINVAL,
-            Errno::ENFILE => Self::ENFILE,
-            Errno::EMFILE => Self::EMFILE,
-            Errno::ENOTTY => Self::ENOTTY,
-            Errno::ETXTBSY => Self::ETXTBSY,
-            Errno::EFBIG => Self::EFBIG,
-            Errno::ENOSPC => Self::ENOSPC,
-            Errno::ESPIPE => Self::ESPIPE,
-            Errno::EROFS => Self::EROFS,
-            Errno::EMLINK => Self::EMLINK,
-            Errno::EPIPE => Self::EPIPE,
-            Errno::EDOM => Self::EDOM,
-            Errno::ERANGE => Self::ERANGE,
-            Errno::EDEADLK => Self::EDEADLK,
-            Errno::ENAMETOOLONG => Self::ENAMETOOLONG,
-            Errno::ENOLCK => Self::ENOLCK,
-            Errno::ENOSYS => Self::ENOSYS,
-            Errno::ENOTEMPTY => Self::ENOTEMPTY,
-            Errno::ELOOP => Self::ELOOP,
-            Errno::ENOMSG => Self::ENOMSG,
-            Errno::EIDRM => Self::EIDRM,
-            Errno::ENOLINK => Self::ENOLINK,
-            Errno::EPROTO => Self::EPROTO,
-            Errno::EMULTIHOP => Self::EMULTIHOP,
-            Errno::EBADMSG => Self::EBADMSG,
-            Errno::EOVERFLOW => Self::EOVERFLOW,
-            Errno::EILSEQ => Self::EILSEQ,
-            Errno::ENOTSOCK => Self::ENOTSOCK,
-            Errno::EDESTADDRREQ => Self::EDESTADDRREQ,
-            Errno::EMSGSIZE => Self::EMSGSIZE,
-            Errno::EPROTOTYPE => Self::EPROTOTYPE,
-            Errno::ENOPROTOOPT => Self::ENOPROTOOPT,
-            Errno::EPROTONOSUPPORT => Self::EPROTONOSUPPORT,
-            Errno::EAFNOSUPPORT => Self::EAFNOSUPPORT,
-            Errno::EADDRINUSE => Self::EADDRINUSE,
-            Errno::EADDRNOTAVAIL => Self::EADDRNOTAVAIL,
-            Errno::ENETDOWN => Self::ENETDOWN,
-            Errno::ENETUNREACH => Self::ENETUNREACH,
-            Errno::ENETRESET => Self::ENETRESET,
-            Errno::ECONNABORTED => Self::ECONNABORTED,
-            Errno::ECONNRESET => Self::ECONNRESET,
-            Errno::ENOBUFS => Self::ENOBUFS,
-            Errno::EISCONN => Self::EISCONN,
-            Errno::ENOTCONN => Self::ENOTCONN,
-            Errno::ETIMEDOUT => Self::ETIMEDOUT,
-            Errno::ECONNREFUSED => Self::ECONNREFUSED,
-            Errno::EHOSTUNREACH => Self::EHOSTUNREACH,
-            Errno::EALREADY => Self::EALREADY,
-            Errno::EINPROGRESS => Self::EINPROGRESS,
-            Errno::ESTALE => Self::ESTALE,
-            Errno::EDQUOT => Self::EDQUOT,
-            Errno::ECANCELED => Self::ECANCELED,
-            Errno::EOWNERDEAD => Self::EOWNERDEAD,
-            Errno::ENOTRECOVERABLE => Self::ENOTRECOVERABLE,
+impl From<io::Error> for WasiError {
+    fn from(err: io::Error) -> Self {
+        match err.raw_os_error() {
+            Some(code) => match code {
+                libc::EPERM => Self::EPERM,
+                libc::ENOENT => Self::ENOENT,
+                libc::ESRCH => Self::ESRCH,
+                libc::EINTR => Self::EINTR,
+                libc::EIO => Self::EIO,
+                libc::ENXIO => Self::ENXIO,
+                libc::E2BIG => Self::E2BIG,
+                libc::ENOEXEC => Self::ENOEXEC,
+                libc::EBADF => Self::EBADF,
+                libc::ECHILD => Self::ECHILD,
+                libc::EAGAIN => Self::EAGAIN,
+                libc::ENOMEM => Self::ENOMEM,
+                libc::EACCES => Self::EACCES,
+                libc::EFAULT => Self::EFAULT,
+                libc::EBUSY => Self::EBUSY,
+                libc::EEXIST => Self::EEXIST,
+                libc::EXDEV => Self::EXDEV,
+                libc::ENODEV => Self::ENODEV,
+                libc::ENOTDIR => Self::ENOTDIR,
+                libc::EISDIR => Self::EISDIR,
+                libc::EINVAL => Self::EINVAL,
+                libc::ENFILE => Self::ENFILE,
+                libc::EMFILE => Self::EMFILE,
+                libc::ENOTTY => Self::ENOTTY,
+                libc::ETXTBSY => Self::ETXTBSY,
+                libc::EFBIG => Self::EFBIG,
+                libc::ENOSPC => Self::ENOSPC,
+                libc::ESPIPE => Self::ESPIPE,
+                libc::EROFS => Self::EROFS,
+                libc::EMLINK => Self::EMLINK,
+                libc::EPIPE => Self::EPIPE,
+                libc::EDOM => Self::EDOM,
+                libc::ERANGE => Self::ERANGE,
+                libc::EDEADLK => Self::EDEADLK,
+                libc::ENAMETOOLONG => Self::ENAMETOOLONG,
+                libc::ENOLCK => Self::ENOLCK,
+                libc::ENOSYS => Self::ENOSYS,
+                libc::ENOTEMPTY => Self::ENOTEMPTY,
+                libc::ELOOP => Self::ELOOP,
+                libc::ENOMSG => Self::ENOMSG,
+                libc::EIDRM => Self::EIDRM,
+                libc::ENOLINK => Self::ENOLINK,
+                libc::EPROTO => Self::EPROTO,
+                libc::EMULTIHOP => Self::EMULTIHOP,
+                libc::EBADMSG => Self::EBADMSG,
+                libc::EOVERFLOW => Self::EOVERFLOW,
+                libc::EILSEQ => Self::EILSEQ,
+                libc::ENOTSOCK => Self::ENOTSOCK,
+                libc::EDESTADDRREQ => Self::EDESTADDRREQ,
+                libc::EMSGSIZE => Self::EMSGSIZE,
+                libc::EPROTOTYPE => Self::EPROTOTYPE,
+                libc::ENOPROTOOPT => Self::ENOPROTOOPT,
+                libc::EPROTONOSUPPORT => Self::EPROTONOSUPPORT,
+                libc::EAFNOSUPPORT => Self::EAFNOSUPPORT,
+                libc::EADDRINUSE => Self::EADDRINUSE,
+                libc::EADDRNOTAVAIL => Self::EADDRNOTAVAIL,
+                libc::ENETDOWN => Self::ENETDOWN,
+                libc::ENETUNREACH => Self::ENETUNREACH,
+                libc::ENETRESET => Self::ENETRESET,
+                libc::ECONNABORTED => Self::ECONNABORTED,
+                libc::ECONNRESET => Self::ECONNRESET,
+                libc::ENOBUFS => Self::ENOBUFS,
+                libc::EISCONN => Self::EISCONN,
+                libc::ENOTCONN => Self::ENOTCONN,
+                libc::ETIMEDOUT => Self::ETIMEDOUT,
+                libc::ECONNREFUSED => Self::ECONNREFUSED,
+                libc::EHOSTUNREACH => Self::EHOSTUNREACH,
+                libc::EALREADY => Self::EALREADY,
+                libc::EINPROGRESS => Self::EINPROGRESS,
+                libc::ESTALE => Self::ESTALE,
+                libc::EDQUOT => Self::EDQUOT,
+                libc::ECANCELED => Self::ECANCELED,
+                libc::EOWNERDEAD => Self::EOWNERDEAD,
+                libc::ENOTRECOVERABLE => Self::ENOTRECOVERABLE,
+                libc::ENOTSUP => Self::ENOTSUP,
+                x => {
+                    log::debug!("Unknown errno value: {}", x);
+                    Self::EIO
+                }
+            },
+            None => {
+                log::debug!("Other I/O error: {}", err);
+                Self::EIO
+            }
         }
     }
 }
@@ -156,13 +161,13 @@ pub(crate) fn nix_from_oflags(oflags: wasi::__wasi_oflags_t) -> OFlag {
     nix_flags
 }
 
-pub(crate) fn filestat_from_nix(filestat: libc::stat) -> Result<wasi::__wasi_filestat_t> {
+pub(crate) fn filestat_from_nix(filestat: libc::stat) -> WasiResult<wasi::__wasi_filestat_t> {
     use std::convert::TryInto;
 
-    fn filestat_to_timestamp(secs: u64, nsecs: u64) -> Result<wasi::__wasi_timestamp_t> {
+    fn filestat_to_timestamp(secs: u64, nsecs: u64) -> WasiResult<wasi::__wasi_timestamp_t> {
         secs.checked_mul(1_000_000_000)
             .and_then(|sec_nsec| sec_nsec.checked_add(nsecs))
-            .ok_or(Error::EOVERFLOW)
+            .ok_or(WasiError::EOVERFLOW)
     }
 
     let filetype = yanix::file::FileType::from_stat_st_mode(filestat.st_mode);
@@ -197,7 +202,7 @@ pub(crate) fn filestat_from_nix(filestat: libc::stat) -> Result<wasi::__wasi_fil
 ///
 /// NB WASI spec requires OS string to be valid UTF-8. Otherwise,
 /// `__WASI_ERRNO_ILSEQ` error is returned.
-pub(crate) fn path_from_host<S: AsRef<OsStr>>(s: S) -> Result<String> {
+pub(crate) fn path_from_host<S: AsRef<OsStr>>(s: S) -> WasiResult<String> {
     helpers::path_from_slice(s.as_ref().as_bytes()).map(String::from)
 }
 

@@ -12,21 +12,10 @@
 
 pub mod dummy;
 
-use dummy::{dummy_imports, dummy_values};
-use std::collections::{HashMap, HashSet};
+use dummy::dummy_imports;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use wasmtime::*;
-
-fn fuzz_default_config(strategy: Strategy) -> Config {
-    crate::init_fuzzing();
-    let mut config = Config::new();
-    config
-        .cranelift_debug_verifier(true)
-        .wasm_multi_value(true)
-        .strategy(strategy)
-        .expect("failed to enable lightbeam");
-    return config;
-}
+use wasmtime_wast::WastContext;
 
 fn log_wasm(wasm: &[u8]) {
     static CNT: AtomicUsize = AtomicUsize::new(0);
@@ -51,7 +40,7 @@ fn log_wasm(wasm: &[u8]) {
 ///
 /// You can control which compiler is used via passing a `Strategy`.
 pub fn instantiate(wasm: &[u8], strategy: Strategy) {
-    instantiate_with_config(wasm, fuzz_default_config(strategy));
+    instantiate_with_config(wasm, crate::fuzz_default_config(strategy).unwrap());
 }
 
 /// Instantiate the Wasm buffer, and implicitly fail if we have an unexpected
@@ -98,7 +87,7 @@ pub fn instantiate_with_config(wasm: &[u8], config: Config) {
 pub fn compile(wasm: &[u8], strategy: Strategy) {
     crate::init_fuzzing();
 
-    let engine = Engine::new(&fuzz_default_config(strategy));
+    let engine = Engine::new(&crate::fuzz_default_config(strategy).unwrap());
     let store = Store::new(&engine);
     log_wasm(wasm);
     let _ = Module::new(&store, wasm);
@@ -108,10 +97,13 @@ pub fn compile(wasm: &[u8], strategy: Strategy) {
 /// exports. Modulo OOM, non-canonical NaNs, and usage of Wasm features that are
 /// or aren't enabled for different configs, we should get the same results when
 /// we call the exported functions for all of our different configs.
+#[cfg(feature = "binaryen")]
 pub fn differential_execution(
     ttf: &crate::generators::WasmOptTtf,
     configs: &[crate::generators::DifferentialConfig],
 ) {
+    use std::collections::{HashMap, HashSet};
+
     crate::init_fuzzing();
 
     // We need at least two configs.
@@ -177,37 +169,20 @@ pub fn differential_execution(
             }
         };
 
-        let funcs = module
-            .exports()
-            .iter()
-            .filter_map(|e| {
-                if let ExternType::Func(_) = e.ty() {
-                    Some(e.name())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        for name in funcs {
+        for (name, f) in instance.exports().filter_map(|e| {
+            let name = e.name();
+            e.into_func().map(|f| (name, f))
+        }) {
             // Always call the hang limit initializer first, so that we don't
             // infinite loop when calling another export.
             init_hang_limit(&instance);
 
-            let f = match instance
-                .get_export(&name)
-                .expect("instance should have export from module")
-            {
-                Extern::Func(f) => f.clone(),
-                _ => panic!("export should be a function"),
-            };
-
             let ty = f.ty();
-            let params = match dummy_values(ty.params()) {
+            let params = match dummy::dummy_values(ty.params()) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            let this_result = f.call(&params);
+            let this_result = f.call(&params).map_err(|e| e.downcast::<Trap>().unwrap());
 
             let existing_result = export_func_results
                 .entry(name.to_string())
@@ -215,75 +190,77 @@ pub fn differential_execution(
             assert_same_export_func_result(&existing_result, &this_result, name);
         }
     }
-}
 
-fn init_hang_limit(instance: &Instance) {
-    match instance.get_export("hangLimitInitializer") {
-        None => return,
-        Some(Extern::Func(f)) => {
-            f.call(&[])
-                .expect("initializing the hang limit should not fail");
-        }
-        Some(_) => panic!("unexpected hangLimitInitializer export"),
-    }
-}
-
-fn assert_same_export_func_result(
-    lhs: &Result<Box<[Val]>, Trap>,
-    rhs: &Result<Box<[Val]>, Trap>,
-    func_name: &str,
-) {
-    let fail = || {
-        panic!(
-            "differential fuzzing failed: exported func {} returned two \
-             different results: {:?} != {:?}",
-            func_name, lhs, rhs
-        )
-    };
-
-    match (lhs, rhs) {
-        (Err(_), Err(_)) => {}
-        (Ok(lhs), Ok(rhs)) => {
-            if lhs.len() != rhs.len() {
-                fail();
+    fn init_hang_limit(instance: &Instance) {
+        match instance.get_export("hangLimitInitializer") {
+            None => return,
+            Some(Extern::Func(f)) => {
+                f.call(&[])
+                    .expect("initializing the hang limit should not fail");
             }
-            for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
-                match (lhs, rhs) {
-                    (Val::I32(lhs), Val::I32(rhs)) if lhs == rhs => continue,
-                    (Val::I64(lhs), Val::I64(rhs)) if lhs == rhs => continue,
-                    (Val::V128(lhs), Val::V128(rhs)) if lhs == rhs => continue,
-                    (Val::F32(lhs), Val::F32(rhs)) => {
-                        let lhs = f32::from_bits(*lhs);
-                        let rhs = f32::from_bits(*rhs);
-                        if lhs == rhs || (lhs.is_nan() && rhs.is_nan()) {
-                            continue;
-                        } else {
-                            fail()
+            Some(_) => panic!("unexpected hangLimitInitializer export"),
+        }
+    }
+
+    fn assert_same_export_func_result(
+        lhs: &Result<Box<[Val]>, Trap>,
+        rhs: &Result<Box<[Val]>, Trap>,
+        func_name: &str,
+    ) {
+        let fail = || {
+            panic!(
+                "differential fuzzing failed: exported func {} returned two \
+                 different results: {:?} != {:?}",
+                func_name, lhs, rhs
+            )
+        };
+
+        match (lhs, rhs) {
+            (Err(_), Err(_)) => {}
+            (Ok(lhs), Ok(rhs)) => {
+                if lhs.len() != rhs.len() {
+                    fail();
+                }
+                for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
+                    match (lhs, rhs) {
+                        (Val::I32(lhs), Val::I32(rhs)) if lhs == rhs => continue,
+                        (Val::I64(lhs), Val::I64(rhs)) if lhs == rhs => continue,
+                        (Val::V128(lhs), Val::V128(rhs)) if lhs == rhs => continue,
+                        (Val::F32(lhs), Val::F32(rhs)) => {
+                            let lhs = f32::from_bits(*lhs);
+                            let rhs = f32::from_bits(*rhs);
+                            if lhs == rhs || (lhs.is_nan() && rhs.is_nan()) {
+                                continue;
+                            } else {
+                                fail()
+                            }
                         }
-                    }
-                    (Val::F64(lhs), Val::F64(rhs)) => {
-                        let lhs = f64::from_bits(*lhs);
-                        let rhs = f64::from_bits(*rhs);
-                        if lhs == rhs || (lhs.is_nan() && rhs.is_nan()) {
-                            continue;
-                        } else {
-                            fail()
+                        (Val::F64(lhs), Val::F64(rhs)) => {
+                            let lhs = f64::from_bits(*lhs);
+                            let rhs = f64::from_bits(*rhs);
+                            if lhs == rhs || (lhs.is_nan() && rhs.is_nan()) {
+                                continue;
+                            } else {
+                                fail()
+                            }
                         }
+                        (Val::AnyRef(_), Val::AnyRef(_)) | (Val::FuncRef(_), Val::FuncRef(_)) => {
+                            continue
+                        }
+                        _ => fail(),
                     }
-                    (Val::AnyRef(_), Val::AnyRef(_)) | (Val::FuncRef(_), Val::FuncRef(_)) => {
-                        continue
-                    }
-                    _ => fail(),
                 }
             }
+            _ => fail(),
         }
-        _ => fail(),
     }
 }
 
 /// Invoke the given API calls.
+#[cfg(feature = "binaryen")]
 pub fn make_api_calls(api: crate::generators::api::ApiCalls) {
     use crate::generators::api::ApiCall;
+    use std::collections::HashMap;
 
     crate::init_fuzzing();
 
@@ -306,6 +283,11 @@ pub fn make_api_calls(api: crate::generators::api::ApiCalls) {
             ApiCall::ConfigDebugInfo(b) => {
                 log::trace!("enabling debuginfo");
                 config.as_mut().unwrap().debug_info(b);
+            }
+
+            ApiCall::ConfigInterruptable(b) => {
+                log::trace!("enabling interruption");
+                config.as_mut().unwrap().interruptable(b);
             }
 
             ApiCall::EngineNew => {
@@ -384,8 +366,7 @@ pub fn make_api_calls(api: crate::generators::api::ApiCalls) {
 
                 let funcs = instance
                     .exports()
-                    .iter()
-                    .filter_map(|e| match e {
+                    .filter_map(|e| match e.into_extern() {
                         Extern::Func(f) => Some(f.clone()),
                         _ => None,
                     })
@@ -398,7 +379,7 @@ pub fn make_api_calls(api: crate::generators::api::ApiCalls) {
                 let nth = nth % funcs.len();
                 let f = &funcs[nth];
                 let ty = f.ty();
-                let params = match dummy_values(ty.params()) {
+                let params = match dummy::dummy_values(ty.params()) {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
@@ -406,4 +387,16 @@ pub fn make_api_calls(api: crate::generators::api::ApiCalls) {
             }
         }
     }
+}
+
+/// Executes the wast `test` spectest with the `config` specified.
+///
+/// Ensures that spec tests pass regardless of the `Config`.
+pub fn spectest(config: crate::generators::Config, test: crate::generators::SpecTest) {
+    let store = Store::new(&Engine::new(&config.to_wasmtime()));
+    let mut wast_context = WastContext::new(store);
+    wast_context.register_spectest().unwrap();
+    wast_context
+        .run_buffer(test.file, test.contents.as_bytes())
+        .unwrap();
 }

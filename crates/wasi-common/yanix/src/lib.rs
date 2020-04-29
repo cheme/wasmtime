@@ -13,28 +13,58 @@ pub mod clock;
 pub mod dir;
 pub mod fcntl;
 pub mod file;
+pub mod filetime;
 pub mod poll;
 pub mod socket;
 
-mod errno;
 mod sys;
 
 pub mod fadvise {
     pub use super::sys::fadvise::*;
 }
 
-pub use errno::Errno;
-use std::{ffi, num};
-use thiserror::Error;
+use std::io::{Error, Result};
 
-pub type Result<T> = std::result::Result<T, YanixError>;
-
-#[derive(Debug, Error)]
-pub enum YanixError {
-    #[error("raw os error {0}")]
-    Errno(#[from] Errno),
-    #[error("a nul byte was not found in the expected position")]
-    NulError(#[from] ffi::NulError),
-    #[error("integral type conversion failed")]
-    TryFromIntError(#[from] num::TryFromIntError),
+fn from_success_code<T: IsZero>(t: T) -> Result<()> {
+    if t.is_zero() {
+        Ok(())
+    } else {
+        Err(Error::last_os_error())
+    }
 }
+
+fn from_result<T: IsMinusOne>(t: T) -> Result<T> {
+    if t.is_minus_one() {
+        Err(Error::last_os_error())
+    } else {
+        Ok(t)
+    }
+}
+
+trait IsZero {
+    fn is_zero(&self) -> bool;
+}
+
+macro_rules! impl_is_zero {
+    ($($t:ident)*) => ($(impl IsZero for $t {
+        fn is_zero(&self) -> bool {
+            *self == 0
+        }
+    })*)
+}
+
+impl_is_zero! { i32 i64 isize }
+
+trait IsMinusOne {
+    fn is_minus_one(&self) -> bool;
+}
+
+macro_rules! impl_is_minus_one {
+    ($($t:ident)*) => ($(impl IsMinusOne for $t {
+        fn is_minus_one(&self) -> bool {
+            *self == -1
+        }
+    })*)
+}
+
+impl_is_minus_one! { i32 i64 isize }

@@ -22,25 +22,19 @@
 )]
 
 mod ctx;
-mod error;
-mod fdentry;
+mod entry;
+mod fdpool;
 pub mod fs;
-mod helpers;
-mod host;
-mod hostcalls_impl;
-mod memory;
+mod handle;
 pub mod old;
+mod path;
+mod poll;
 mod sandboxed_tty_writer;
+pub mod snapshots;
 mod sys;
+mod virtfs;
 pub mod wasi;
-pub mod wasi32;
 
-pub mod hostcalls {
-    wig::define_hostcalls!("snapshot" "wasi_snapshot_preview1");
-}
-
-pub use ctx::{WasiCtx, WasiCtxBuilder};
+pub use ctx::{WasiCtx, WasiCtxBuilder, WasiCtxBuilderError};
 pub use sys::preopen_dir;
-
-pub use error::Error;
-pub(crate) use error::Result;
+pub use virtfs::{FileContents, VirtualDirEntry};

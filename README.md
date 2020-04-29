@@ -12,6 +12,7 @@
     <a href="https://github.com/bytecodealliance/wasmtime/actions?query=workflow%3ACI"><img src="https://github.com/bytecodealliance/wasmtime/workflows/CI/badge.svg" alt="build status" /></a>
     <a href="https://bytecodealliance.zulipchat.com/#narrow/stream/217126-wasmtime"><img src="https://img.shields.io/badge/zulip-join_chat-brightgreen.svg" alt="zulip chat" /></a>
     <img src="https://img.shields.io/badge/rustc-1.37+-green.svg" alt="min rustc" />
+    <a href="https://docs.rs/wasmtime"><img src="https://docs.rs/wasmtime/badge.svg" alt="Documentation Status" /></a>
   </p>
 
   <h3>
@@ -63,9 +64,9 @@ Hello, world!
 
 * **Lightweight**. Wasmtime is a standalone runtime for WebAssembly that scales
   with your needs. It fits on tiny chips as well as makes use of huge servers.
-  Wasmtime can be embedded into almost any application too.
+  Wasmtime can be [embedded] into almost any application too.
 
-* **Fast**. Wasmtime is built on the optimizing Cranelift code generator to
+* **Fast**. Wasmtime is built on the optimizing [Cranelift] code generator to
   quickly generate high-quality machine code at runtime.
 
 * **Configurable**. Whether you need to precompile your wasm ahead of time,
@@ -81,6 +82,33 @@ Hello, world!
   [future proposals to WebAssembly](https://github.com/WebAssembly/proposals) as
   well. Wasmtime developers are intimately engaged with the WebAssembly
   standards process all along the way too.
+
+[Cranelift]: https://github.com/bytecodealliance/wasmtime/blob/master/cranelift/README.md
+[embedded]: https://bytecodealliance.github.io/wasmtime/lang.html
+
+## Language Support
+
+You can use Wasmtime from a variety of different languages through embeddings of
+the implementation:
+
+* **[Rust]** - the [`wasmtime` crate]
+* **[C]** - the [`wasm.h`], [`wasi.h`], and [`wasmtime.h`] headers
+* **[Python]** - the [`wasmtime` PyPI package]
+* **[.NET]** - the [`Wasmtime` NuGet package]
+* **[Go]** - the [wasmtime-go repository]
+
+[Rust]: https://bytecodealliance.github.io/wasmtime/lang-rust.html
+[C]: https://bytecodealliance.github.io/wasmtime/examples-c-embed.html
+[`wasmtime` crate]: https://crates.io/crates/wasmtime
+[`wasm.h`]: https://github.com/WebAssembly/wasm-c-api/blob/master/include/wasm.h
+[`wasi.h`]: https://github.com/bytecodealliance/wasmtime/blob/master/crates/c-api/include/wasi.h
+[`wasmtime.h`]: https://github.com/bytecodealliance/wasmtime/blob/master/crates/c-api/include/wasmtime.h
+[Python]: https://bytecodealliance.github.io/wasmtime/lang-python.html
+[`wasmtime` PyPI package]: https://pypi.org/project/wasmtime/
+[.NET]: https://bytecodealliance.github.io/wasmtime/lang-dotnet.html
+[`Wasmtime` NuGet package]: https://www.nuget.org/packages/Wasmtime
+[Go]: https://bytecodealliance.github.io/wasmtime/lang-go.html
+[wasmtime-go repository]: https://pkg.go.dev/github.com/bytecodealliance/wasmtime-go
 
 ## Documentation
 

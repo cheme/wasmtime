@@ -2,10 +2,10 @@ use crate::trampoline::{generate_global_export, generate_memory_export, generate
 use crate::values::{from_checked_anyfunc, into_checked_anyfunc, Val};
 use crate::Mutability;
 use crate::{ExternType, GlobalType, MemoryType, TableType, ValType};
-use crate::{Func, Store};
+use crate::{Func, Store, Trap};
 use anyhow::{anyhow, bail, Result};
 use std::slice;
-use wasmtime_environ::{ir, wasm};
+use wasmtime_environ::wasm;
 use wasmtime_runtime::{self as runtime, InstanceHandle};
 
 // Externals
@@ -34,7 +34,7 @@ impl Extern {
     /// Returns the underlying `Func`, if this external is a function.
     ///
     /// Returns `None` if this is not a function.
-    pub fn func(&self) -> Option<&Func> {
+    pub fn into_func(self) -> Option<Func> {
         match self {
             Extern::Func(func) => Some(func),
             _ => None,
@@ -44,7 +44,7 @@ impl Extern {
     /// Returns the underlying `Global`, if this external is a global.
     ///
     /// Returns `None` if this is not a global.
-    pub fn global(&self) -> Option<&Global> {
+    pub fn into_global(self) -> Option<Global> {
         match self {
             Extern::Global(global) => Some(global),
             _ => None,
@@ -54,7 +54,7 @@ impl Extern {
     /// Returns the underlying `Table`, if this external is a table.
     ///
     /// Returns `None` if this is not a table.
-    pub fn table(&self) -> Option<&Table> {
+    pub fn into_table(self) -> Option<Table> {
         match self {
             Extern::Table(table) => Some(table),
             _ => None,
@@ -64,7 +64,7 @@ impl Extern {
     /// Returns the underlying `Memory`, if this external is a memory.
     ///
     /// Returns `None` if this is not a memory.
-    pub fn memory(&self) -> Option<&Memory> {
+    pub fn into_memory(self) -> Option<Memory> {
         match self {
             Extern::Memory(memory) => Some(memory),
             _ => None,
@@ -74,41 +74,51 @@ impl Extern {
     /// Returns the type associated with this `Extern`.
     pub fn ty(&self) -> ExternType {
         match self {
-            Extern::Func(ft) => ExternType::Func(ft.ty().clone()),
-            Extern::Memory(ft) => ExternType::Memory(ft.ty().clone()),
-            Extern::Table(tt) => ExternType::Table(tt.ty().clone()),
-            Extern::Global(gt) => ExternType::Global(gt.ty().clone()),
+            Extern::Func(ft) => ExternType::Func(ft.ty()),
+            Extern::Memory(ft) => ExternType::Memory(ft.ty()),
+            Extern::Table(tt) => ExternType::Table(tt.ty()),
+            Extern::Global(gt) => ExternType::Global(gt.ty()),
         }
     }
 
     pub(crate) fn get_wasmtime_export(&self) -> wasmtime_runtime::Export {
         match self {
-            Extern::Func(f) => f.wasmtime_export().clone(),
-            Extern::Global(g) => g.wasmtime_export().clone(),
-            Extern::Memory(m) => m.wasmtime_export().clone(),
-            Extern::Table(t) => t.wasmtime_export().clone(),
+            Extern::Func(f) => f.wasmtime_function().clone().into(),
+            Extern::Global(g) => g.wasmtime_export.clone().into(),
+            Extern::Memory(m) => m.wasmtime_export.clone().into(),
+            Extern::Table(t) => t.wasmtime_export.clone().into(),
         }
     }
 
     pub(crate) fn from_wasmtime_export(
+        wasmtime_export: wasmtime_runtime::Export,
         store: &Store,
         instance_handle: InstanceHandle,
-        export: wasmtime_runtime::Export,
     ) -> Extern {
-        match export {
-            wasmtime_runtime::Export::Function { .. } => {
-                Extern::Func(Func::from_wasmtime_function(export, store, instance_handle))
+        match wasmtime_export {
+            wasmtime_runtime::Export::Function(f) => {
+                Extern::Func(Func::from_wasmtime_function(f, store, instance_handle))
             }
-            wasmtime_runtime::Export::Memory { .. } => {
-                Extern::Memory(Memory::from_wasmtime_memory(export, store, instance_handle))
+            wasmtime_runtime::Export::Memory(m) => {
+                Extern::Memory(Memory::from_wasmtime_memory(m, store, instance_handle))
             }
-            wasmtime_runtime::Export::Global { .. } => {
-                Extern::Global(Global::from_wasmtime_global(export, store, instance_handle))
+            wasmtime_runtime::Export::Global(g) => {
+                Extern::Global(Global::from_wasmtime_global(g, store, instance_handle))
             }
-            wasmtime_runtime::Export::Table { .. } => {
-                Extern::Table(Table::from_wasmtime_table(export, store, instance_handle))
+            wasmtime_runtime::Export::Table(t) => {
+                Extern::Table(Table::from_wasmtime_table(t, store, instance_handle))
             }
         }
+    }
+
+    pub(crate) fn comes_from_same_store(&self, store: &Store) -> bool {
+        let my_store = match self {
+            Extern::Func(f) => f.store(),
+            Extern::Global(g) => &g.store,
+            Extern::Memory(m) => &m.store,
+            Extern::Table(t) => &t.store,
+        };
+        Store::same(my_store, store)
     }
 }
 
@@ -153,9 +163,8 @@ impl From<Table> for Extern {
 /// instances are equivalent in their functionality.
 #[derive(Clone)]
 pub struct Global {
-    _store: Store,
-    ty: GlobalType,
-    wasmtime_export: wasmtime_runtime::Export,
+    store: Store,
+    wasmtime_export: wasmtime_runtime::ExportGlobal,
     wasmtime_handle: InstanceHandle,
 }
 
@@ -172,40 +181,53 @@ impl Global {
     /// Returns an error if the `ty` provided does not match the type of the
     /// value `val`.
     pub fn new(store: &Store, ty: GlobalType, val: Val) -> Result<Global> {
+        if !val.comes_from_same_store(store) {
+            bail!("cross-`Store` globals are not supported");
+        }
         if val.ty() != *ty.content() {
             bail!("value provided does not match the type of this global");
         }
         let (wasmtime_handle, wasmtime_export) = generate_global_export(store, &ty, val)?;
         Ok(Global {
-            _store: store.clone(),
-            ty,
+            store: store.clone(),
             wasmtime_export,
             wasmtime_handle,
         })
     }
 
     /// Returns the underlying type of this `global`.
-    pub fn ty(&self) -> &GlobalType {
-        &self.ty
+    pub fn ty(&self) -> GlobalType {
+        // The original export is coming from wasmtime_runtime itself we should
+        // support all the types coming out of it, so assert such here.
+        GlobalType::from_wasmtime_global(&self.wasmtime_export.global)
+            .expect("core wasm global type should be supported")
     }
 
-    fn wasmtime_global_definition(&self) -> *mut wasmtime_runtime::VMGlobalDefinition {
-        match self.wasmtime_export {
-            wasmtime_runtime::Export::Global { definition, .. } => definition,
-            _ => panic!("global definition not found"),
+    /// Returns the value type of this `global`.
+    pub fn val_type(&self) -> ValType {
+        ValType::from_wasmtime_type(self.wasmtime_export.global.ty)
+            .expect("core wasm type should be supported")
+    }
+
+    /// Returns the underlying mutability of this `global`.
+    pub fn mutability(&self) -> Mutability {
+        if self.wasmtime_export.global.mutability {
+            Mutability::Var
+        } else {
+            Mutability::Const
         }
     }
 
     /// Returns the current [`Val`] of this global.
     pub fn get(&self) -> Val {
-        let definition = unsafe { &mut *self.wasmtime_global_definition() };
         unsafe {
-            match self.ty().content() {
+            let definition = &mut *self.wasmtime_export.definition;
+            match self.val_type() {
                 ValType::I32 => Val::from(*definition.as_i32()),
                 ValType::I64 => Val::from(*definition.as_i64()),
                 ValType::F32 => Val::F32(*definition.as_u32()),
                 ValType::F64 => Val::F64(*definition.as_u64()),
-                _ => unimplemented!("Global::get for {:?}", self.ty().content()),
+                ty => unimplemented!("Global::get for {:?}", ty),
             }
         }
     }
@@ -217,18 +239,18 @@ impl Global {
     /// Returns an error if this global has a different type than `Val`, or if
     /// it's not a mutable global.
     pub fn set(&self, val: Val) -> Result<()> {
-        if self.ty().mutability() != Mutability::Var {
+        if self.mutability() != Mutability::Var {
             bail!("immutable global cannot be set");
         }
-        if val.ty() != *self.ty().content() {
-            bail!(
-                "global of type {:?} cannot be set to {:?}",
-                self.ty().content(),
-                val.ty()
-            );
+        let ty = self.val_type();
+        if val.ty() != ty {
+            bail!("global of type {:?} cannot be set to {:?}", ty, val.ty());
         }
-        let definition = unsafe { &mut *self.wasmtime_global_definition() };
+        if !val.comes_from_same_store(&self.store) {
+            bail!("cross-`Store` values are not supported");
+        }
         unsafe {
+            let definition = &mut *self.wasmtime_export.definition;
             match val {
                 Val::I32(i) => *definition.as_i32_mut() = i,
                 Val::I64(i) => *definition.as_i64_mut() = i,
@@ -240,28 +262,14 @@ impl Global {
         Ok(())
     }
 
-    pub(crate) fn wasmtime_export(&self) -> &wasmtime_runtime::Export {
-        &self.wasmtime_export
-    }
-
     pub(crate) fn from_wasmtime_global(
-        export: wasmtime_runtime::Export,
+        wasmtime_export: wasmtime_runtime::ExportGlobal,
         store: &Store,
         wasmtime_handle: InstanceHandle,
     ) -> Global {
-        let global = if let wasmtime_runtime::Export::Global { ref global, .. } = export {
-            global
-        } else {
-            panic!("wasmtime export is not global")
-        };
-        // The original export is coming from wasmtime_runtime itself we should
-        // support all the types coming out of it, so assert such here.
-        let ty = GlobalType::from_wasmtime_global(&global)
-            .expect("core wasm global type should be supported");
         Global {
-            _store: store.clone(),
-            ty: ty,
-            wasmtime_export: export,
+            store: store.clone(),
+            wasmtime_export,
             wasmtime_handle,
         }
     }
@@ -285,13 +293,12 @@ impl Global {
 #[derive(Clone)]
 pub struct Table {
     store: Store,
-    ty: TableType,
     wasmtime_handle: InstanceHandle,
-    wasmtime_export: wasmtime_runtime::Export,
+    wasmtime_export: wasmtime_runtime::ExportTable,
 }
 
 fn set_table_item(
-    handle: &mut InstanceHandle,
+    handle: &InstanceHandle,
     table_index: wasm::DefinedTableIndex,
     item_index: u32,
     item: wasmtime_runtime::VMCallerCheckedAnyfunc,
@@ -315,23 +322,17 @@ impl Table {
     /// Returns an error if `init` does not match the element type of the table.
     pub fn new(store: &Store, ty: TableType, init: Val) -> Result<Table> {
         let item = into_checked_anyfunc(init, store)?;
-        let (mut wasmtime_handle, wasmtime_export) = generate_table_export(store, &ty)?;
+        let (wasmtime_handle, wasmtime_export) = generate_table_export(store, &ty)?;
 
         // Initialize entries with the init value.
-        match wasmtime_export {
-            wasmtime_runtime::Export::Table { definition, .. } => {
-                let index = wasmtime_handle.table_index(unsafe { &*definition });
-                let len = unsafe { (*definition).current_elements };
-                for i in 0..len {
-                    set_table_item(&mut wasmtime_handle, index, i, item.clone())?;
-                }
-            }
-            _ => unreachable!("export should be a table"),
+        let definition = unsafe { &*wasmtime_export.definition };
+        let index = wasmtime_handle.table_index(definition);
+        for i in 0..definition.current_elements {
+            set_table_item(&wasmtime_handle, index, i, item.clone())?;
         }
 
         Ok(Table {
             store: store.clone(),
-            ty,
             wasmtime_handle,
             wasmtime_export,
         })
@@ -339,16 +340,14 @@ impl Table {
 
     /// Returns the underlying type of this table, including its element type as
     /// well as the maximum/minimum lower bounds.
-    pub fn ty(&self) -> &TableType {
-        &self.ty
+    pub fn ty(&self) -> TableType {
+        TableType::from_wasmtime_table(&self.wasmtime_export.table.table)
     }
 
     fn wasmtime_table_index(&self) -> wasm::DefinedTableIndex {
-        match self.wasmtime_export {
-            wasmtime_runtime::Export::Table { definition, .. } => {
-                self.wasmtime_handle.table_index(unsafe { &*definition })
-            }
-            _ => panic!("global definition not found"),
+        unsafe {
+            self.wasmtime_handle
+                .table_index(&*self.wasmtime_export.definition)
         }
     }
 
@@ -369,19 +368,13 @@ impl Table {
     /// the right type to be stored in this table.
     pub fn set(&self, index: u32, val: Val) -> Result<()> {
         let table_index = self.wasmtime_table_index();
-        let mut wasmtime_handle = self.wasmtime_handle.clone();
         let item = into_checked_anyfunc(val, &self.store)?;
-        set_table_item(&mut wasmtime_handle, table_index, index, item)
+        set_table_item(&self.wasmtime_handle, table_index, index, item)
     }
 
     /// Returns the current size of this table.
     pub fn size(&self) -> u32 {
-        match self.wasmtime_export {
-            wasmtime_runtime::Export::Table { definition, .. } => unsafe {
-                (*definition).current_elements
-            },
-            _ => panic!("global definition not found"),
-        }
+        unsafe { (*self.wasmtime_export.definition).current_elements }
     }
 
     /// Grows the size of this table by `delta` more elements, initialization
@@ -421,6 +414,10 @@ impl Table {
         src_index: u32,
         len: u32,
     ) -> Result<()> {
+        if !Store::same(&dst_table.store, &src_table.store) {
+            bail!("cross-`Store` table copies are not supported");
+        }
+
         // NB: We must use the `dst_table`'s `wasmtime_handle` for the
         // `dst_table_index` and vice versa for `src_table` since each table can
         // come from different modules.
@@ -431,37 +428,20 @@ impl Table {
         let src_table_index = src_table.wasmtime_table_index();
         let src_table = src_table.wasmtime_handle.get_defined_table(src_table_index);
 
-        runtime::Table::copy(
-            dst_table,
-            src_table,
-            dst_index,
-            src_index,
-            len,
-            ir::SourceLoc::default(),
-        )?;
+        runtime::Table::copy(dst_table, src_table, dst_index, src_index, len)
+            .map_err(Trap::from_jit)?;
         Ok(())
     }
 
-    pub(crate) fn wasmtime_export(&self) -> &wasmtime_runtime::Export {
-        &self.wasmtime_export
-    }
-
     pub(crate) fn from_wasmtime_table(
-        export: wasmtime_runtime::Export,
+        wasmtime_export: wasmtime_runtime::ExportTable,
         store: &Store,
-        instance_handle: wasmtime_runtime::InstanceHandle,
+        wasmtime_handle: wasmtime_runtime::InstanceHandle,
     ) -> Table {
-        let table = if let wasmtime_runtime::Export::Table { ref table, .. } = export {
-            table
-        } else {
-            panic!("wasmtime export is not table")
-        };
-        let ty = TableType::from_wasmtime_table(&table.table);
         Table {
             store: store.clone(),
-            ty: ty,
-            wasmtime_handle: instance_handle,
-            wasmtime_export: export,
+            wasmtime_handle,
+            wasmtime_export,
         }
     }
 }
@@ -486,12 +466,197 @@ impl Table {
 /// It is intended that `Memory` is safe to share between threads. At this time
 /// this is not implemented in `wasmtime`, however. This is planned to be
 /// implemented though!
+///
+/// # `Memory` and Safety
+///
+/// Linear memory is a lynchpin of safety for WebAssembly, but it turns out
+/// there are very few ways to safely inspect the contents of a memory from the
+/// host (Rust). This is because memory safety is quite tricky when working with
+/// a `Memory` and we're still working out the best idioms to encapsulate
+/// everything safely where it's efficient and ergonomic. This section of
+/// documentation, however, is intended to help educate a bit what is and isn't
+/// safe when working with `Memory`.
+///
+/// For safety purposes you can think of a `Memory` as a glorified
+/// `Rc<UnsafeCell<Vec<u8>>>`. There are a few consequences of this
+/// interpretation:
+///
+/// * At any time someone else may have access to the memory (hence the `Rc`).
+///   This could be a wasm instance, other host code, or a set of wasm instances
+///   which all reference a `Memory`. When in doubt assume someone else has a
+///   handle to your `Memory`.
+///
+/// * At any time, memory can be read from or written to (hence the
+///   `UnsafeCell`). Anyone with a handle to a wasm memory can read/write to it.
+///   Primarily other instances can execute the `load` and `store` family of
+///   instructions, as well as any other which modifies or reads memory.
+///
+/// * At any time memory may grow (hence the `Vec<..>`). Growth may relocate the
+///   base memory pointer (similar to how `vec.push(...)` can change the result
+///   of `.as_ptr()`)
+///
+/// So given that we're working roughly with `Rc<UnsafeCell<Vec<u8>>>` that's a
+/// lot to keep in mind! It's hopefully though sort of setting the stage as to
+/// what you can safely do with memories.
+///
+/// Let's run through a few safe examples first of how you can use a `Memory`.
+///
+/// ```rust
+/// use wasmtime::Memory;
+///
+/// fn safe_examples(mem: &Memory) {
+///     // Just like wasm, it's safe to read memory almost at any time. The
+///     // gotcha here is that we need to be sure to load from the correct base
+///     // pointer and perform the bounds check correctly. So long as this is
+///     // all self contained here (e.g. not arbitrary code in the middle) we're
+///     // good to go.
+///     let byte = unsafe { mem.data_unchecked()[0x123] };
+///
+///     // Short-lived borrows of memory are safe, but they must be scoped and
+///     // not have code which modifies/etc `Memory` while the borrow is active.
+///     // For example if you want to read a string from memory it is safe to do
+///     // so:
+///     let string_base = 0xdead;
+///     let string_len = 0xbeef;
+///     let string = unsafe {
+///         let bytes = &mem.data_unchecked()[string_base..][..string_len];
+///         match std::str::from_utf8(bytes) {
+///             Ok(s) => s.to_string(), // copy out of wasm memory
+///             Err(_) => panic!("not valid utf-8"),
+///         }
+///     };
+///
+///     // Additionally like wasm you can write to memory at any point in time,
+///     // again making sure that after you get the unchecked slice you don't
+///     // execute code which could read/write/modify `Memory`:
+///     unsafe {
+///         mem.data_unchecked_mut()[0x123] = 3;
+///     }
+///
+///     // When working with *borrows* that point directly into wasm memory you
+///     // need to be extremely careful. Any functionality that operates on a
+///     // borrow into wasm memory needs to be thoroughly audited to effectively
+///     // not touch the `Memory` at all
+///     let data_base = 0xfeed;
+///     let data_len = 0xface;
+///     unsafe {
+///         let data = &mem.data_unchecked()[data_base..][..data_len];
+///         host_function_that_doesnt_touch_memory(data);
+///
+///         // effectively the same rules apply to mutable borrows
+///         let data_mut = &mut mem.data_unchecked_mut()[data_base..][..data_len];
+///         host_function_that_doesnt_touch_memory(data);
+///     }
+/// }
+/// # fn host_function_that_doesnt_touch_memory(_: &[u8]){}
+/// ```
+///
+/// It's worth also, however, covering some examples of **incorrect**,
+/// **unsafe** usages of `Memory`. Do not do these things!
+///
+/// ```rust
+/// # use anyhow::Result;
+/// use wasmtime::Memory;
+///
+/// // NOTE: All code in this function is not safe to execute and may cause
+/// // segfaults/undefined behavior at runtime. Do not copy/paste these examples
+/// // into production code!
+/// unsafe fn unsafe_examples(mem: &Memory) -> Result<()> {
+///     // First and foremost, any borrow can be invalidated at any time via the
+///     // `Memory::grow` function. This can relocate memory which causes any
+///     // previous pointer to be possibly invalid now.
+///     let pointer: &u8 = &mem.data_unchecked()[0x100];
+///     mem.grow(1)?; // invalidates `pointer`!
+///     // println!("{}", *pointer); // FATAL: use-after-free
+///
+///     // Note that the use-after-free also applies to slices, whether they're
+///     // slices of bytes or strings.
+///     let slice: &[u8] = &mem.data_unchecked()[0x100..0x102];
+///     mem.grow(1)?; // invalidates `slice`!
+///     // println!("{:?}", slice); // FATAL: use-after-free
+///
+///     // Due to the reference-counted nature of `Memory` note that literal
+///     // calls to `Memory::grow` are not sufficient to audit for. You'll need
+///     // to be careful that any mutation of `Memory` doesn't happen while
+///     // you're holding an active borrow.
+///     let slice: &[u8] = &mem.data_unchecked()[0x100..0x102];
+///     some_other_function(); // may invalidate `slice` through another `mem` reference
+///     // println!("{:?}", slice); // FATAL: maybe a use-after-free
+///
+///     // An especially subtle aspect of accessing a wasm instance's memory is
+///     // that you need to be extremely careful about aliasing. Anyone at any
+///     // time can call `data_unchecked()` or `data_unchecked_mut()`, which
+///     // means you can easily have aliasing mutable references:
+///     let ref1: &u8 = &mem.data_unchecked()[0x100];
+///     let ref2: &mut u8 = &mut mem.data_unchecked_mut()[0x100];
+///     // *ref2 = *ref1; // FATAL: violates Rust's aliasing rules
+///
+///     // Note that aliasing applies to strings as well, for example this is
+///     // not valid because the slices overlap.
+///     let slice1: &mut [u8] = &mut mem.data_unchecked_mut()[0x100..][..3];
+///     let slice2: &mut [u8] = &mut mem.data_unchecked_mut()[0x102..][..4];
+///     // println!("{:?} {:?}", slice1, slice2); // FATAL: aliasing mutable pointers
+///
+///     Ok(())
+/// }
+/// # fn some_other_function() {}
+/// ```
+///
+/// Overall there's some general rules of thumb when working with `Memory` and
+/// getting raw pointers inside of it:
+///
+/// * If you never have a "long lived" pointer into memory, you're likely in the
+///   clear. Care still needs to be taken in threaded scenarios or when/where
+///   data is read, but you'll be shielded from many classes of issues.
+/// * Long-lived pointers must always respect Rust'a aliasing rules. It's ok for
+///   shared borrows to overlap with each other, but mutable borrows must
+///   overlap with nothing.
+/// * Long-lived pointers are only valid if `Memory` isn't used in an unsafe way
+///   while the pointer is valid. This includes both aliasing and growth.
+///
+/// At this point it's worth reiterating again that working with `Memory` is
+/// pretty tricky and that's not great! Proposals such as [interface types] are
+/// intended to prevent wasm modules from even needing to import/export memory
+/// in the first place, which obviates the need for all of these safety caveats!
+/// Additionally over time we're still working out the best idioms to expose in
+/// `wasmtime`, so if you've got ideas or questions please feel free to [open an
+/// issue]!
+///
+/// ## `Memory` Safety and Threads
+///
+/// Currently the `wasmtime` crate does not implement the wasm threads proposal,
+/// but it is planned to do so. It's additionally worthwhile discussing how this
+/// affects memory safety and what was previously just discussed as well.
+///
+/// Once threads are added into the mix, all of the above rules still apply.
+/// There's an additional, rule, however, that all reads and writes can
+/// happen *concurrently*. This effectively means that long-lived borrows into
+/// wasm memory are virtually never safe to have.
+///
+/// Mutable pointers are fundamentally unsafe to have in a concurrent scenario
+/// in the face of arbitrary wasm code. Only if you dynamically know for sure
+/// that wasm won't access a region would it be safe to construct a mutable
+/// pointer. Additionally even shared pointers are largely unsafe because their
+/// underlying contents may change, so unless `UnsafeCell` in one form or
+/// another is used everywhere there's no safety.
+///
+/// One important point about concurrency is that `Memory::grow` can indeed
+/// happen concurrently. This, however, will never relocate the base pointer.
+/// Shared memories must always have a maximum size and they will be
+/// preallocated such that growth will never relocate the base pointer. The
+/// maximum length of the memory, however, will change over time.
+///
+/// Overall the general rule of thumb for shared memories is that you must
+/// atomically read and write everything. Nothing can be borrowed and everything
+/// must be eagerly copied out.
+///
+/// [interface types]: https://github.com/webassembly/interface-types
+/// [open an issue]: https://github.com/bytecodealliance/wasmtime/issues/new
 #[derive(Clone)]
 pub struct Memory {
-    _store: Store,
-    ty: MemoryType,
+    store: Store,
     wasmtime_handle: InstanceHandle,
-    wasmtime_export: wasmtime_runtime::Export,
+    wasmtime_export: wasmtime_runtime::ExportMemory,
 }
 
 impl Memory {
@@ -500,27 +665,51 @@ impl Memory {
     /// The `store` argument is a general location for cache information, and
     /// otherwise the memory will immediately be allocated according to the
     /// type's configuration. All WebAssembly memory is initialized to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use wasmtime::*;
+    /// # fn main() -> anyhow::Result<()> {
+    /// let store = Store::default();
+    ///
+    /// let memory_ty = MemoryType::new(Limits::new(1, None));
+    /// let memory = Memory::new(&store, memory_ty);
+    ///
+    /// let module = Module::new(&store, "(module (memory (import \"\" \"\") 1))")?;
+    /// let instance = Instance::new(&module, &[memory.into()])?;
+    /// // ...
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(store: &Store, ty: MemoryType) -> Memory {
         let (wasmtime_handle, wasmtime_export) =
             generate_memory_export(store, &ty).expect("generated memory");
         Memory {
-            _store: store.clone(),
-            ty,
+            store: store.clone(),
             wasmtime_handle,
             wasmtime_export,
         }
     }
 
     /// Returns the underlying type of this memory.
-    pub fn ty(&self) -> &MemoryType {
-        &self.ty
-    }
-
-    fn wasmtime_memory_definition(&self) -> *mut wasmtime_runtime::VMMemoryDefinition {
-        match self.wasmtime_export {
-            wasmtime_runtime::Export::Memory { definition, .. } => definition,
-            _ => panic!("memory definition not found"),
-        }
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use wasmtime::*;
+    /// # fn main() -> anyhow::Result<()> {
+    /// let store = Store::default();
+    /// let module = Module::new(&store, "(module (memory (export \"mem\") 1))")?;
+    /// let instance = Instance::new(&module, &[])?;
+    /// let memory = instance.get_memory("mem").unwrap();
+    /// let ty = memory.ty();
+    /// assert_eq!(ty.limits().min(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn ty(&self) -> MemoryType {
+        MemoryType::from_wasmtime_memory(&self.wasmtime_export.memory.memory)
     }
 
     /// Returns this memory as a slice view that can be read natively in Rust.
@@ -547,6 +736,9 @@ impl Memory {
     /// your program. Additionally `Memory` can be shared and used in any number
     /// of wasm instances, so calling any wasm code should be considered
     /// dangerous while you're holding a slice of memory.
+    ///
+    /// For more information and examples see the documentation on the
+    /// [`Memory`] type.
     pub unsafe fn data_unchecked(&self) -> &[u8] {
         self.data_unchecked_mut()
     }
@@ -563,8 +755,11 @@ impl Memory {
     /// function twice. Extreme caution should be used when using this method,
     /// and in general you probably want to result to unsafe accessors and the
     /// `data` methods below.
+    ///
+    /// For more information and examples see the documentation on the
+    /// [`Memory`] type.
     pub unsafe fn data_unchecked_mut(&self) -> &mut [u8] {
-        let definition = &*self.wasmtime_memory_definition();
+        let definition = &*self.wasmtime_export.definition;
         slice::from_raw_parts_mut(definition.base, definition.current_length)
     }
 
@@ -574,15 +769,21 @@ impl Memory {
     /// When reading and manipulating memory be sure to read up on the caveats
     /// of [`Memory::data_unchecked`] to make sure that you can safely
     /// read/write the memory.
+    ///
+    /// For more information and examples see the documentation on the
+    /// [`Memory`] type.
     pub fn data_ptr(&self) -> *mut u8 {
-        unsafe { (*self.wasmtime_memory_definition()).base }
+        unsafe { (*self.wasmtime_export.definition).base }
     }
 
     /// Returns the byte length of this memory.
     ///
     /// The returned value will be a multiple of the wasm page size, 64k.
+    ///
+    /// For more information and examples see the documentation on the
+    /// [`Memory`] type.
     pub fn data_size(&self) -> usize {
-        unsafe { (*self.wasmtime_memory_definition()).current_length }
+        unsafe { (*self.wasmtime_export.definition).current_length }
     }
 
     /// Returns the size, in pages, of this wasm memory.
@@ -604,40 +805,151 @@ impl Memory {
     ///
     /// Returns an error if memory could not be grown, for example if it exceeds
     /// the maximum limits of this memory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use wasmtime::*;
+    /// # fn main() -> anyhow::Result<()> {
+    /// let store = Store::default();
+    /// let module = Module::new(&store, "(module (memory (export \"mem\") 1 2))")?;
+    /// let instance = Instance::new(&module, &[])?;
+    /// let memory = instance.get_memory("mem").unwrap();
+    ///
+    /// assert_eq!(memory.size(), 1);
+    /// assert_eq!(memory.grow(1)?, 1);
+    /// assert_eq!(memory.size(), 2);
+    /// assert!(memory.grow(1).is_err());
+    /// assert_eq!(memory.size(), 2);
+    /// assert_eq!(memory.grow(0)?, 2);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn grow(&self, delta: u32) -> Result<u32> {
-        match self.wasmtime_export {
-            wasmtime_runtime::Export::Memory { definition, .. } => {
-                let definition = unsafe { &(*definition) };
-                let index = self.wasmtime_handle.memory_index(definition);
-                self.wasmtime_handle
-                    .clone()
-                    .memory_grow(index, delta)
-                    .ok_or_else(|| anyhow!("failed to grow memory"))
-            }
-            _ => panic!("memory definition not found"),
-        }
-    }
-
-    pub(crate) fn wasmtime_export(&self) -> &wasmtime_runtime::Export {
-        &self.wasmtime_export
+        let index = self
+            .wasmtime_handle
+            .memory_index(unsafe { &*self.wasmtime_export.definition });
+        self.wasmtime_handle
+            .clone()
+            .memory_grow(index, delta)
+            .ok_or_else(|| anyhow!("failed to grow memory"))
     }
 
     pub(crate) fn from_wasmtime_memory(
-        export: wasmtime_runtime::Export,
+        wasmtime_export: wasmtime_runtime::ExportMemory,
         store: &Store,
-        instance_handle: wasmtime_runtime::InstanceHandle,
+        wasmtime_handle: wasmtime_runtime::InstanceHandle,
     ) -> Memory {
-        let memory = if let wasmtime_runtime::Export::Memory { ref memory, .. } = export {
-            memory
-        } else {
-            panic!("wasmtime export is not memory")
-        };
-        let ty = MemoryType::from_wasmtime_memory(&memory.memory);
         Memory {
-            _store: store.clone(),
-            ty: ty,
-            wasmtime_handle: instance_handle,
-            wasmtime_export: export,
+            store: store.clone(),
+            wasmtime_handle,
+            wasmtime_export,
         }
+    }
+}
+
+/// A linear memory. This trait provides an interface for raw memory buffers which are used
+/// by wasmtime, e.g. inside ['Memory']. Such buffers are in principle not thread safe.
+/// By implementing this trait together with MemoryCreator,
+/// one can supply wasmtime with custom allocated host managed memory.
+///
+/// # Safety
+/// The memory should be page aligned and a multiple of page size.
+/// To prevent possible silent overflows, the memory should be protected by a guard page.
+/// Additionally the safety concerns explained in ['Memory'], for accessing the memory
+/// apply here as well.
+///
+/// Note that this is a relatively new and experimental feature and it is recommended
+/// to be familiar with wasmtime runtime code to use it.
+pub unsafe trait LinearMemory {
+    /// Returns the number of allocated wasm pages.
+    fn size(&self) -> u32;
+
+    /// Grow memory by the specified amount of wasm pages.
+    ///
+    /// Returns `None` if memory can't be grown by the specified amount
+    /// of wasm pages.
+    fn grow(&self, delta: u32) -> Option<u32>;
+
+    /// Return the allocated memory as a mutable pointer to u8.
+    fn as_ptr(&self) -> *mut u8;
+}
+
+/// A memory creator. Can be used to provide a memory creator
+/// to wasmtime which supplies host managed memory.
+///
+/// # Safety
+/// This trait is unsafe, as the memory safety depends on proper implementation of
+/// memory management. Memories created by the MemoryCreator should always be treated
+/// as owned by wasmtime instance, and any modification of them outside of wasmtime
+/// invoked routines is unsafe and may lead to corruption.
+///
+/// Note that this is a relatively new and experimental feature and it is recommended
+/// to be familiar with wasmtime runtime code to use it.
+pub unsafe trait MemoryCreator: Send + Sync {
+    /// Create new LinearMemory
+    fn new_memory(&self, ty: MemoryType) -> Result<Box<dyn LinearMemory>, String>;
+}
+
+// Exports
+
+/// An exported WebAssembly value.
+///
+/// This type is primarily accessed from the
+/// [`Instance::exports`](crate::Instance::exports) accessor and describes what
+/// names and items are exported from a wasm instance.
+#[derive(Clone)]
+pub struct Export<'instance> {
+    /// The name of the export.
+    name: &'instance str,
+
+    /// The definition of the export.
+    definition: Extern,
+}
+
+impl<'instance> Export<'instance> {
+    /// Creates a new export which is exported with the given `name` and has the
+    /// given `definition`.
+    pub(crate) fn new(name: &'instance str, definition: Extern) -> Export<'instance> {
+        Export { name, definition }
+    }
+
+    /// Returns the name by which this export is known.
+    pub fn name(&self) -> &'instance str {
+        self.name
+    }
+
+    /// Return the `ExternType` of this export.
+    pub fn ty(&self) -> ExternType {
+        self.definition.ty()
+    }
+
+    /// Consume this `Export` and return the contained `Extern`.
+    pub fn into_extern(self) -> Extern {
+        self.definition
+    }
+
+    /// Consume this `Export` and return the contained `Func`, if it's a function,
+    /// or `None` otherwise.
+    pub fn into_func(self) -> Option<Func> {
+        self.definition.into_func()
+    }
+
+    /// Consume this `Export` and return the contained `Table`, if it's a table,
+    /// or `None` otherwise.
+    pub fn into_table(self) -> Option<Table> {
+        self.definition.into_table()
+    }
+
+    /// Consume this `Export` and return the contained `Memory`, if it's a memory,
+    /// or `None` otherwise.
+    pub fn into_memory(self) -> Option<Memory> {
+        self.definition.into_memory()
+    }
+
+    /// Consume this `Export` and return the contained `Global`, if it's a global,
+    /// or `None` otherwise.
+    pub fn into_global(self) -> Option<Global> {
+        self.definition.into_global()
     }
 }

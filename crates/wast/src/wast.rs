@@ -1,9 +1,10 @@
-use crate::spectest::instantiate_spectest;
+use crate::spectest::link_spectest;
 use anyhow::{anyhow, bail, Context as _, Result};
-use std::collections::HashMap;
 use std::path::Path;
 use std::str;
 use wasmtime::*;
+use wast::parser::{self, ParseBuffer};
+use wast::Wat;
 
 /// Translate from a `script::Value` to a `RuntimeValue`.
 fn runtime_value(v: &wast::Expression<'_>) -> Result<Val> {
@@ -28,10 +29,11 @@ pub struct WastContext {
     /// Wast files have a concept of a "current" module, which is the most
     /// recently defined.
     current: Option<Instance>,
-
-    instances: HashMap<String, Instance>,
+    // FIXME(#1479) this is only needed to retain correct trap information after
+    // we've dropped previous `Instance` values.
+    modules: Vec<Module>,
+    linker: Linker,
     store: Store,
-    spectest: Option<HashMap<&'static str, Extern>>,
 }
 
 enum Outcome<T = Vec<Val>> {
@@ -51,55 +53,35 @@ impl<T> Outcome<T> {
 impl WastContext {
     /// Construct a new instance of `WastContext`.
     pub fn new(store: Store) -> Self {
+        // Spec tests will redefine the same module/name sometimes, so we need
+        // to allow shadowing in the linker which picks the most recent
+        // definition as what to link when linking.
+        let mut linker = Linker::new(&store);
+        linker.allow_shadowing(true);
         Self {
             current: None,
+            linker,
             store,
-            spectest: None,
-            instances: HashMap::new(),
+            modules: Vec::new(),
         }
     }
 
-    fn get_instance(&self, instance_name: Option<&str>) -> Result<Instance> {
-        match instance_name {
-            Some(name) => self
-                .instances
-                .get(name)
-                .cloned()
-                .ok_or_else(|| anyhow!("failed to find instance named `{}`", name)),
+    fn get_export(&self, module: Option<&str>, name: &str) -> Result<Extern> {
+        match module {
+            Some(module) => self.linker.get_one_by_name(module, name),
             None => self
                 .current
-                .clone()
-                .ok_or_else(|| anyhow!("no previous instance found")),
+                .as_ref()
+                .ok_or_else(|| anyhow!("no previous instance found"))?
+                .get_export(name)
+                .ok_or_else(|| anyhow!("no item named `{}` found", name)),
         }
     }
 
-    fn instantiate(&self, module: &[u8]) -> Result<Outcome<Instance>> {
+    fn instantiate(&mut self, module: &[u8]) -> Result<Outcome<Instance>> {
         let module = Module::new(&self.store, module)?;
-        let mut imports = Vec::new();
-        for import in module.imports() {
-            if import.module() == "spectest" {
-                let spectest = self
-                    .spectest
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("spectest module isn't instantiated"))?;
-                let export = spectest
-                    .get(import.name())
-                    .ok_or_else(|| anyhow!("unknown import `spectest::{}`", import.name()))?;
-                imports.push(export.clone());
-                continue;
-            }
-
-            let instance = self
-                .instances
-                .get(import.module())
-                .ok_or_else(|| anyhow!("no module named `{}`", import.module()))?;
-            let export = instance
-                .get_export(import.name())
-                .ok_or_else(|| anyhow!("unknown import `{}::{}`", import.name(), import.module()))?
-                .clone();
-            imports.push(export);
-        }
-        let instance = match Instance::new(&module, &imports) {
+        self.modules.push(module.clone());
+        let instance = match self.linker.instantiate(&module) {
             Ok(i) => i,
             Err(e) => return e.downcast::<Trap>().map(Outcome::Trap),
         };
@@ -108,7 +90,7 @@ impl WastContext {
 
     /// Register "spectest" which is used by the spec testsuite.
     pub fn register_spectest(&mut self) -> Result<()> {
-        self.spectest = Some(instantiate_spectest(&self.store));
+        link_spectest(&mut self.linker)?;
         Ok(())
     }
 
@@ -144,7 +126,7 @@ impl WastContext {
             Outcome::Trap(e) => bail!("instantiation failed with: {}", e.message()),
         };
         if let Some(name) = instance_name {
-            self.instances.insert(name.to_string(), instance.clone());
+            self.linker.instance(name, &instance)?;
         }
         self.current = Some(instance);
         Ok(())
@@ -152,9 +134,17 @@ impl WastContext {
 
     /// Register an instance to make it available for performing actions.
     fn register(&mut self, name: Option<&str>, as_name: &str) -> Result<()> {
-        let instance = self.get_instance(name)?.clone();
-        self.instances.insert(as_name.to_string(), instance);
-        Ok(())
+        match name {
+            Some(name) => self.linker.alias(name, as_name),
+            None => {
+                let current = self
+                    .current
+                    .as_ref()
+                    .ok_or(anyhow!("no previous instance"))?;
+                self.linker.instance(as_name, current)?;
+                Ok(())
+            }
+        }
     }
 
     /// Invoke an exported function from an instance.
@@ -164,23 +154,21 @@ impl WastContext {
         field: &str,
         args: &[Val],
     ) -> Result<Outcome> {
-        let instance = self.get_instance(instance_name.as_ref().map(|x| &**x))?;
-        let func = instance
-            .get_export(field)
-            .and_then(|e| e.func())
+        let func = self
+            .get_export(instance_name, field)?
+            .into_func()
             .ok_or_else(|| anyhow!("no function named `{}`", field))?;
         Ok(match func.call(args) {
             Ok(result) => Outcome::Ok(result.into()),
-            Err(e) => Outcome::Trap(e),
+            Err(e) => Outcome::Trap(e.downcast()?),
         })
     }
 
     /// Get the value of an exported global from an instance.
     fn get(&mut self, instance_name: Option<&str>, field: &str) -> Result<Outcome> {
-        let instance = self.get_instance(instance_name.as_ref().map(|x| &**x))?;
-        let global = instance
-            .get_export(field)
-            .and_then(|e| e.global())
+        let global = self
+            .get_export(instance_name, field)?
+            .into_global()
             .ok_or_else(|| anyhow!("no global named `{}`", field))?;
         Ok(Outcome::Ok(vec![global.get()]))
     }
@@ -196,19 +184,25 @@ impl WastContext {
         Ok(())
     }
 
-    fn assert_trap(&self, result: Outcome, message: &str) -> Result<()> {
+    fn assert_trap(&self, result: Outcome, expected: &str) -> Result<()> {
         let trap = match result {
             Outcome::Ok(values) => bail!("expected trap, got {:?}", values),
             Outcome::Trap(t) => t,
         };
-        if trap.message().contains(message) {
+        let actual = trap.message();
+        if actual.contains(expected)
+            // `bulk-memory-operations/bulk.wast` checks for a message that
+            // specifies which element is uninitialized, but our traps don't
+            // shepherd that information out.
+            || (expected.contains("uninitialized element 2") && actual.contains("uninitialized element"))
+        {
             return Ok(());
         }
         if cfg!(feature = "lightbeam") {
-            println!("TODO: Check the assert_trap message: {}", message);
+            println!("TODO: Check the assert_trap message: {}", expected);
             return Ok(());
         }
-        bail!("expected {}, got {}", message, trap.message())
+        bail!("expected '{}', got '{}'", expected, actual)
     }
 
     /// Run a wast script from a byte buffer.
@@ -241,6 +235,17 @@ impl WastContext {
             Module(mut module) => {
                 let binary = module.encode()?;
                 self.module(module.id.map(|s| s.name()), &binary)?;
+            }
+            QuoteModule { span: _, source } => {
+                let mut module = String::new();
+                for src in source {
+                    module.push_str(str::from_utf8(src)?);
+                    module.push_str(" ");
+                }
+                let buf = ParseBuffer::new(&module)?;
+                let mut wat = parser::parse::<Wat>(&buf)?;
+                let binary = wat.module.encode()?;
+                self.module(wat.module.id.map(|s| s.name()), &binary)?;
             }
             Register {
                 span: _,

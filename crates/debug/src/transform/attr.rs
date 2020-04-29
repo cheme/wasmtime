@@ -3,12 +3,21 @@ use super::expression::{compile_expression, CompiledExpression, FunctionFrameInf
 use super::range_info_builder::RangeInfoBuilder;
 use super::refs::{PendingDebugInfoRefs, PendingUnitRefs};
 use super::{DebugInputContext, Reader, TransformError};
-use anyhow::Error;
-use gimli::{write, AttributeValue, DebugLineOffset, DebugStr, DebuggingInformationEntry};
+use anyhow::{bail, Error};
+use gimli::{
+    write, AttributeValue, DebugLineOffset, DebugLineStr, DebugStr, DebugStrOffsets,
+    DebuggingInformationEntry, Unit,
+};
+use wasmtime_environ::isa::TargetIsa;
 
+#[derive(Debug)]
 pub(crate) enum FileAttributeContext<'a> {
     Root(Option<DebugLineOffset>),
-    Children(&'a Vec<write::FileId>, Option<&'a CompiledExpression>),
+    Children(
+        &'a Vec<write::FileId>,
+        u64,
+        Option<&'a CompiledExpression<'a>>,
+    ),
 }
 
 fn is_exprloc_to_loclist_allowed(attr_name: gimli::constants::DwAt) -> bool {
@@ -27,11 +36,11 @@ fn is_exprloc_to_loclist_allowed(attr_name: gimli::constants::DwAt) -> bool {
 }
 
 pub(crate) fn clone_die_attributes<'a, R>(
+    unit: &Unit<R, R::Offset>,
     entry: &DebuggingInformationEntry<R>,
     context: &DebugInputContext<R>,
     addr_tr: &'a AddressTransform,
     frame_info: Option<&FunctionFrameInfo>,
-    unit_encoding: gimli::Encoding,
     out_unit: &mut write::Unit,
     current_scope_id: write::UnitEntryId,
     subprogram_range_builder: Option<RangeInfoBuilder>,
@@ -41,29 +50,31 @@ pub(crate) fn clone_die_attributes<'a, R>(
     pending_die_refs: &mut PendingUnitRefs,
     pending_di_refs: &mut PendingDebugInfoRefs,
     file_context: FileAttributeContext<'a>,
+    isa: &dyn TargetIsa,
 ) -> Result<(), Error>
 where
     R: Reader,
 {
     let _tag = &entry.tag();
     let endian = gimli::RunTimeEndian::Little;
+    let unit_encoding = unit.encoding();
 
     let range_info = if let Some(subprogram_range_builder) = subprogram_range_builder {
         subprogram_range_builder
-    } else if entry.tag() == gimli::DW_TAG_compile_unit {
-        // FIXME currently address_transform operate on a single func range,
-        // once it is fixed we can properly set DW_AT_ranges attribute.
-        // Using for now DW_AT_low_pc = 0.
-        RangeInfoBuilder::Position(0)
     } else {
-        RangeInfoBuilder::from(entry, context, unit_encoding, cu_low_pc)?
+        // FIXME for CU: currently address_transform operate on a single
+        // function range, and when CU spans multiple ranges the
+        // transformation may be incomplete.
+        RangeInfoBuilder::from(unit, entry, context, cu_low_pc)?
     };
     range_info.build(addr_tr, out_unit, current_scope_id);
 
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
         let attr_value = match attr.value() {
-            AttributeValue::Addr(_) if attr.name() == gimli::DW_AT_low_pc => {
+            AttributeValue::Addr(_) | AttributeValue::DebugAddrIndex(_)
+                if attr.name() == gimli::DW_AT_low_pc =>
+            {
                 continue;
             }
             AttributeValue::Udata(_) if attr.name() == gimli::DW_AT_high_pc => {
@@ -75,8 +86,16 @@ where
             AttributeValue::Exprloc(_) if attr.name() == gimli::DW_AT_frame_base => {
                 continue;
             }
+            AttributeValue::DebugAddrBase(_) | AttributeValue::DebugStrOffsetsBase(_) => {
+                continue;
+            }
 
             AttributeValue::Addr(u) => {
+                let addr = addr_tr.translate(u).unwrap_or(write::Address::Constant(0));
+                write::AttributeValue::Address(addr)
+            }
+            AttributeValue::DebugAddrIndex(i) => {
+                let u = context.debug_addr.get_address(4, unit.addr_base, i)?;
                 let addr = addr_tr.translate(u).unwrap_or(write::Address::Constant(0));
                 write::AttributeValue::Address(addr)
             }
@@ -97,8 +116,8 @@ where
                 }
             }
             AttributeValue::FileIndex(i) => {
-                if let FileAttributeContext::Children(file_map, _) = file_context {
-                    write::AttributeValue::FileIndex(Some(file_map[(i - 1) as usize]))
+                if let FileAttributeContext::Children(file_map, file_index_base, _) = file_context {
+                    write::AttributeValue::FileIndex(Some(file_map[(i - file_index_base) as usize]))
                 } else {
                     return Err(TransformError("unexpected file index attribute").into());
                 }
@@ -107,9 +126,17 @@ where
                 let s = context.debug_str.get_str(str_offset)?.to_slice()?.to_vec();
                 write::AttributeValue::StringRef(out_strings.add(s))
             }
+            AttributeValue::DebugStrOffsetsIndex(i) => {
+                let str_offset = context.debug_str_offsets.get_str_offset(
+                    gimli::Format::Dwarf32,
+                    unit.str_offsets_base,
+                    i,
+                )?;
+                let s = context.debug_str.get_str(str_offset)?.to_slice()?.to_vec();
+                write::AttributeValue::StringRef(out_strings.add(s))
+            }
             AttributeValue::RangeListsRef(r) => {
-                let range_info =
-                    RangeInfoBuilder::from_ranges_ref(r, context, unit_encoding, cu_low_pc)?;
+                let range_info = RangeInfoBuilder::from_ranges_ref(unit, r, context, cu_low_pc)?;
                 let range_list_id = range_info.build_ranges(addr_tr, &mut out_unit.ranges);
                 write::AttributeValue::RangeListRef(range_list_id)
             }
@@ -120,17 +147,19 @@ where
                     unit_encoding,
                     low_pc,
                     &context.debug_addr,
-                    context.debug_addr_base,
+                    unit.addr_base,
                 )?;
-                let frame_base = if let FileAttributeContext::Children(_, frame_base) = file_context
-                {
-                    frame_base
-                } else {
-                    None
-                };
+                let frame_base =
+                    if let FileAttributeContext::Children(_, _, frame_base) = file_context {
+                        frame_base
+                    } else {
+                        None
+                    };
                 let mut result = None;
                 while let Some(loc) = locs.next()? {
-                    if let Some(expr) = compile_expression(&loc.data, unit_encoding, frame_base)? {
+                    if let Some(expr) =
+                        compile_expression(&loc.data, unit_encoding, frame_base, isa)?
+                    {
                         if result.is_none() {
                             result = Some(Vec::new());
                         }
@@ -139,7 +168,7 @@ where
                             addr_tr,
                             frame_info,
                             endian,
-                        ) {
+                        )? {
                             if len == 0 {
                                 // Ignore empty range
                                 continue;
@@ -162,13 +191,13 @@ where
                 write::AttributeValue::LocationListRef(list_id)
             }
             AttributeValue::Exprloc(ref expr) => {
-                let frame_base = if let FileAttributeContext::Children(_, frame_base) = file_context
-                {
-                    frame_base
-                } else {
-                    None
-                };
-                if let Some(expr) = compile_expression(expr, unit_encoding, frame_base)? {
+                let frame_base =
+                    if let FileAttributeContext::Children(_, _, frame_base) = file_context {
+                        frame_base
+                    } else {
+                        None
+                    };
+                if let Some(expr) = compile_expression(expr, unit_encoding, frame_base, isa)? {
                     if expr.is_simple() {
                         if let Some(expr) = expr.build() {
                             write::AttributeValue::Exprloc(expr)
@@ -179,7 +208,7 @@ where
                         // Conversion to loclist is required.
                         if let Some(scope_ranges) = scope_ranges {
                             let exprs =
-                                expr.build_with_locals(scope_ranges, addr_tr, frame_info, endian);
+                                expr.build_with_locals(scope_ranges, addr_tr, frame_info, endian)?;
                             if exprs.is_empty() {
                                 continue;
                             }
@@ -248,7 +277,7 @@ where
                 pending_di_refs.insert(current_scope_id, attr.name(), offset);
                 continue;
             }
-            _ => panic!(), //write::AttributeValue::StringRef(out_strings.add("_")),
+            a => bail!("Unexpected attribute: {:?}", a),
         };
         let current_scope = out_unit.get_mut(current_scope_id);
         current_scope.set(attr.name(), attr_value);
@@ -259,9 +288,12 @@ where
 pub(crate) fn clone_attr_string<R>(
     attr_value: &AttributeValue<R>,
     form: gimli::DwForm,
+    unit: &Unit<R, R::Offset>,
     debug_str: &DebugStr<R>,
+    debug_str_offsets: &DebugStrOffsets<R>,
+    debug_line_str: &DebugLineStr<R>,
     out_strings: &mut write::StringTable,
-) -> Result<write::LineString, gimli::Error>
+) -> Result<write::LineString, Error>
 where
     R: Reader,
 {
@@ -269,8 +301,19 @@ where
         AttributeValue::DebugStrRef(str_offset) => {
             debug_str.get_str(*str_offset)?.to_slice()?.to_vec()
         }
+        AttributeValue::DebugStrOffsetsIndex(i) => {
+            let str_offset = debug_str_offsets.get_str_offset(
+                gimli::Format::Dwarf32,
+                unit.str_offsets_base,
+                *i,
+            )?;
+            debug_str.get_str(str_offset)?.to_slice()?.to_vec()
+        }
+        AttributeValue::DebugLineStrRef(str_offset) => {
+            debug_line_str.get_str(*str_offset)?.to_slice()?.to_vec()
+        }
         AttributeValue::String(b) => b.to_slice()?.to_vec(),
-        _ => panic!("Unexpected attribute value"),
+        v => bail!("Unexpected attribute value: {:?}", v),
     };
     Ok(match form {
         gimli::DW_FORM_strp => {
@@ -278,6 +321,6 @@ where
             write::LineString::StringRef(id)
         }
         gimli::DW_FORM_string => write::LineString::String(content),
-        _ => panic!("DW_FORM_line_strp or other not supported"),
+        _ => bail!("DW_FORM_line_strp or other not supported"),
     })
 }

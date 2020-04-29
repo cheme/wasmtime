@@ -5,13 +5,17 @@ use crate::WASM_MAX_PAGES;
 use cranelift_codegen::ir;
 use cranelift_entity::{EntityRef, PrimaryMap};
 use cranelift_wasm::{
-    DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex, ElemIndex,
-    FuncIndex, Global, GlobalIndex, Memory, MemoryIndex, SignatureIndex, Table, TableIndex,
+    DataIndex, DefinedFuncIndex, DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex,
+    ElemIndex, FuncIndex, Global, GlobalIndex, Memory, MemoryIndex, SignatureIndex, Table,
+    TableIndex,
 };
 use indexmap::IndexMap;
 use more_asserts::assert_ge;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering::SeqCst},
+    Arc,
+};
 
 /// A WebAssembly table initializer.
 #[derive(Clone, Debug, Hash)]
@@ -26,16 +30,16 @@ pub struct TableElements {
     pub elements: Box<[FuncIndex]>,
 }
 
-/// An entity to export.
+/// An index of an entity.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Export {
-    /// Function export.
+pub enum EntityIndex {
+    /// Function index.
     Function(FuncIndex),
-    /// Table export.
+    /// Table index.
     Table(TableIndex),
-    /// Memory export.
+    /// Memory index.
     Memory(MemoryIndex),
-    /// Global export.
+    /// Global index.
     Global(GlobalIndex),
 }
 
@@ -137,27 +141,20 @@ pub struct Module {
     /// A unique identifier (within this process) for this module.
     pub id: usize,
 
+    /// The name of this wasm module, often found in the wasm file.
+    pub name: Option<String>,
+
     /// Local information about a module which is the bare minimum necessary to
     /// translate a function body. This is derived as `Hash` whereas this module
     /// isn't, since it contains too much information needed to translate a
     /// function.
     pub local: ModuleLocal,
 
-    /// Names of imported functions, as well as the index of the import that
-    /// performed this import.
-    pub imported_funcs: PrimaryMap<FuncIndex, (String, String, u32)>,
-
-    /// Names of imported tables.
-    pub imported_tables: PrimaryMap<TableIndex, (String, String, u32)>,
-
-    /// Names of imported memories.
-    pub imported_memories: PrimaryMap<MemoryIndex, (String, String, u32)>,
-
-    /// Names of imported globals.
-    pub imported_globals: PrimaryMap<GlobalIndex, (String, String, u32)>,
+    /// All import records, in the order they are declared in the module.
+    pub imports: Vec<(String, String, EntityIndex)>,
 
     /// Exported entities.
-    pub exports: IndexMap<String, Export>,
+    pub exports: IndexMap<String, EntityIndex>,
 
     /// The module "start" function, if present.
     pub start_func: Option<FuncIndex>,
@@ -167,6 +164,9 @@ pub struct Module {
 
     /// WebAssembly passive elements.
     pub passive_elements: HashMap<ElemIndex, Box<[FuncIndex]>>,
+
+    /// WebAssembly passive data segments.
+    pub passive_data: HashMap<DataIndex, Arc<[u8]>>,
 
     /// WebAssembly table initializers.
     pub func_names: HashMap<FuncIndex, String>,
@@ -215,14 +215,13 @@ impl Module {
 
         Self {
             id: NEXT_ID.fetch_add(1, SeqCst),
-            imported_funcs: PrimaryMap::new(),
-            imported_tables: PrimaryMap::new(),
-            imported_memories: PrimaryMap::new(),
-            imported_globals: PrimaryMap::new(),
+            name: None,
+            imports: Vec::new(),
             exports: IndexMap::new(),
             start_func: None,
             table_elements: Vec::new(),
             passive_elements: HashMap::new(),
+            passive_data: HashMap::new(),
             func_names: HashMap::new(),
             local: ModuleLocal {
                 num_imported_funcs: 0,
@@ -331,5 +330,10 @@ impl ModuleLocal {
     /// Test whether the given global index is for an imported global.
     pub fn is_imported_global(&self, index: GlobalIndex) -> bool {
         index.index() < self.num_imported_globals
+    }
+
+    /// Convenience method for looking up the signature of a function.
+    pub fn func_signature(&self, func_index: FuncIndex) -> &ir::Signature {
+        &self.signatures[self.functions[func_index]]
     }
 }
