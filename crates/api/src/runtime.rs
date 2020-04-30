@@ -1,12 +1,11 @@
 use crate::externals::MemoryCreator;
 use crate::trampoline::{MemoryCreatorProxy, StoreInstanceHandle};
 use anyhow::{bail, Result};
-use std::cell::RefCell;
 use std::cmp;
 use std::convert::TryFrom;
 use std::fmt;
 use std::path::Path;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 
 use wasmparser::{OperatorValidatorConfig, ValidatingParserConfig};
 use wasmtime_environ::settings::{self, Configurable};
@@ -736,8 +735,10 @@ pub struct Store {
 pub(crate) struct StoreInner {
     engine: Engine,
     compiler: Compiler,
-    instances: RefCell<Vec<InstanceHandle>>,
-    signal_handler: RefCell<Option<Box<SignalHandler<'static>>>>,
+
+    // locking should be made in this order
+    instances: RwLock<Vec<InstanceHandle>>,
+    signal_handler: RwLock<Option<Box<SignalHandler<'static>>>>,
 }
 
 impl Store {
@@ -754,8 +755,8 @@ impl Store {
             inner: Arc::new(StoreInner {
                 engine: engine.clone(),
                 compiler,
-                instances: RefCell::new(Vec::new()),
-                signal_handler: RefCell::new(None),
+                instances: RwLock::new(Vec::new()),
+                signal_handler: RwLock::new(None),
             }),
         }
     }
@@ -778,7 +779,7 @@ impl Store {
     }
 
     pub(crate) unsafe fn add_instance(&self, handle: InstanceHandle) -> StoreInstanceHandle {
-        self.inner.instances.borrow_mut().push(handle.clone());
+        self.inner.instances.write().unwrap().push(handle.clone());
         StoreInstanceHandle {
             store: self.clone(),
             handle,
@@ -789,7 +790,8 @@ impl Store {
         debug_assert!(self
             .inner
             .instances
-            .borrow()
+            .read()
+            .unwrap()
             .iter()
             .any(|i| i.vmctx_ptr() == handle.vmctx_ptr()));
         StoreInstanceHandle {
@@ -802,14 +804,16 @@ impl Store {
         Arc::downgrade(&self.inner)
     }
 
-    pub(crate) fn signal_handler(&self) -> std::cell::Ref<'_, Option<Box<SignalHandler<'static>>>> {
-        self.inner.signal_handler.borrow()
+    pub(crate) fn signal_handler(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, Option<Box<SignalHandler<'static>>>> {
+        self.inner.signal_handler.read().unwrap()
     }
 
     pub(crate) fn signal_handler_mut(
         &self,
-    ) -> std::cell::RefMut<'_, Option<Box<SignalHandler<'static>>>> {
-        self.inner.signal_handler.borrow_mut()
+    ) -> std::sync::RwLockWriteGuard<'_, Option<Box<SignalHandler<'static>>>> {
+        self.inner.signal_handler.write().unwrap()
     }
 
     /// Returns whether the stores `a` and `b` refer to the same underlying
@@ -922,7 +926,7 @@ impl Default for Store {
 
 impl Drop for StoreInner {
     fn drop(&mut self) {
-        for instance in self.instances.get_mut().iter() {
+        for instance in self.instances.write().unwrap().iter() {
             unsafe {
                 instance.dealloc();
             }
@@ -1024,5 +1028,15 @@ mod tests {
         assert_eq!(store.engine().config.cache_config.cache_misses(), 1);
 
         Ok(())
+    }
+
+    #[test]
+    fn store_is_sync() {
+        fn la_func<P: Sync>(_param: P) {}
+
+        let config = Config::new();
+        let engine = Engine::new(&config);
+        let store = Store::new(&engine);
+        la_func(store)
     }
 }
