@@ -779,4 +779,14 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+     fn store_is_sync() {
+         fn la_func<P: Sync + Send>(_param: P) {}
+
+         let config = Config::new();
+         let engine = Engine::new(&config);
+         let store = Store::new(&engine);
+         la_func(store)
+     }
 }
