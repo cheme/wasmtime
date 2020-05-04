@@ -1,8 +1,8 @@
 [package]
-name = "wasmtime"
-version = "0.16.0"
+name = "substrate-wasmtime"
+version = "0.16.0-threadsafe.1"
 authors = ["The Wasmtime Project Developers"]
-description = "High-level API to expose the Wasmtime runtime"
+description = "[a thread-safe patched] High-level API to expose the Wasmtime runtime"
 documentation = "https://docs.rs/wasmtime"
 license = "Apache-2.0 WITH LLVM-exception"
 repository = "https://github.com/bytecodealliance/wasmtime"
@@ -10,10 +10,10 @@ readme = "README.md"
 edition = "2018"
 
 [dependencies]
-wasmtime-runtime = { path = "../runtime", version = "0.16.0" }
-wasmtime-environ = { path = "../environ", version = "0.16.0" }
-wasmtime-jit = { path = "../jit", version = "0.16.0" }
-wasmtime-profiling = { path = "../profiling", version = "0.16.0" }
+wasmtime-runtime = { package = "substrate-wasmtime-runtime", path = "../runtime", version = "0.16.0-threadsafe.1" }
+wasmtime-environ = { version = "0.16.0" }
+wasmtime-jit = { package = "substrate-wasmtime-jit", path = "../jit", version = "0.16.0-threadsafe.1" }
+wasmtime-profiling = { version = "0.16.0" }
 wasmparser = "0.51.2"
 target-lexicon = { version = "0.10.0", default-features = false }
 anyhow = "1.0.19"
@@ -28,11 +28,8 @@ wat = { version = "1.0.10", optional = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = "0.3.7"
 
-[dev-dependencies]
-tempfile = "3.0"
-
 [badges]
-maintenance = { status = "actively-developed" }
+maintenance = { status = "experimental" }
 
 [features]
 default = ['wat', 'jitdump']
