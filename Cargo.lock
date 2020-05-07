@@ -1793,12 +1793,12 @@ dependencies = [
  "region",
  "rustc-demangle",
  "substrate-wasmtime-jit",
+ "substrate-wasmtime-profiling",
  "substrate-wasmtime-runtime",
  "target-lexicon",
  "tempfile",
  "wasmparser",
  "wasmtime-environ",
- "wasmtime-profiling",
  "wat",
  "winapi",
 ]
@@ -1818,14 +1818,32 @@ dependencies = [
  "log",
  "more-asserts",
  "region",
+ "substrate-wasmtime-profiling",
  "substrate-wasmtime-runtime",
  "target-lexicon",
  "thiserror",
  "wasmparser",
  "wasmtime-debug",
  "wasmtime-environ",
- "wasmtime-profiling",
  "winapi",
+]
+
+[[package]]
+name = "substrate-wasmtime-profiling"
+version = "0.16.0-threadsafe.2"
+dependencies = [
+ "anyhow",
+ "cfg-if",
+ "gimli",
+ "ittapi-rs",
+ "lazy_static",
+ "libc",
+ "object",
+ "scroll",
+ "serde",
+ "substrate-wasmtime-runtime",
+ "target-lexicon",
+ "wasmtime-environ",
 ]
 
 [[package]]
@@ -2245,24 +2263,6 @@ dependencies = [
  "anyhow",
  "faerie",
  "more-asserts",
- "wasmtime-environ",
-]
-
-[[package]]
-name = "wasmtime-profiling"
-version = "0.16.0"
-dependencies = [
- "anyhow",
- "cfg-if",
- "gimli",
- "ittapi-rs",
- "lazy_static",
- "libc",
- "object",
- "scroll",
- "serde",
- "substrate-wasmtime-runtime",
- "target-lexicon",
  "wasmtime-environ",
 ]
 
