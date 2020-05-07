@@ -1,6 +1,6 @@
 [package]
 name = "substrate-wasmtime-runtime"
-version = "0.16.0"
+version = "0.16.0-threadsafe.2"
 authors = ["The Wasmtime Project Developers"]
 description = "Runtime library support for Wasmtime"
 documentation = "https://docs.rs/wasmtime-runtime"

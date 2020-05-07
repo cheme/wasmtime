@@ -20,7 +20,7 @@ scroll = { version = "0.10.1", optional = true }
 serde = { version = "1.0.99", features = ["derive"] }
 target-lexicon = "0.10.0"
 wasmtime-environ = { path = "../environ", version = "0.16.0" }
-wasmtime-runtime = { path = "../runtime", version = "0.16.0", package="substrate-wasmtime-runtime" }
+wasmtime-runtime = { path = "../runtime", version = "0.16.0-threadsafe.2", package="substrate-wasmtime-runtime" }
 ittapi-rs = { version = "0.1.5", optional = true }
 
 [dependencies.object]
