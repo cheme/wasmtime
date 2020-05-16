@@ -142,7 +142,7 @@ pub struct CompiledModule {
     dbg_jit_registration: Option<Arc<GdbJitImageRegistration>>,
     traps: Traps,
     address_transform: ModuleAddressMap,
-    interrupts: Arc<VMInterrupts>,
+    _interrupts: Arc<VMInterrupts>,
 }
 
 impl CompiledModule {
@@ -192,7 +192,11 @@ impl CompiledModule {
             dbg_jit_registration: dbg_jit_registration.map(Arc::new),
             traps,
             address_transform,
-            interrupts,
+            // Susbtrate fork does not use shared interrupts structure because
+            // it contains a global stack limit variable that can't be used
+            // in the multi-threaded context
+            // See https://github.com/bytecodealliance/wasmtime/pull/1490
+            _interrupts: interrupts,
         }
     }
 
@@ -222,7 +226,7 @@ impl CompiledModule {
             self.signatures.clone(),
             self.dbg_jit_registration.as_ref().map(|r| Arc::clone(&r)),
             host_state,
-            self.interrupts.clone(),
+            Arc::new(VMInterrupts::default()),
         )
     }
 
