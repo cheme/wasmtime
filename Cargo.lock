@@ -1783,7 +1783,7 @@ dependencies = [
 
 [[package]]
 name = "substrate-wasmtime"
-version = "0.16.0-threadsafe.2"
+version = "0.16.0-threadsafe.3"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "substrate-wasmtime-jit"
-version = "0.16.0-threadsafe.2"
+version = "0.16.0-threadsafe.3"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "substrate-wasmtime-profiling"
-version = "0.16.0-threadsafe.2"
+version = "0.16.0-threadsafe.3"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "substrate-wasmtime-runtime"
-version = "0.16.0-threadsafe.2"
+version = "0.16.0-threadsafe.3"
 dependencies = [
  "backtrace",
  "cc",

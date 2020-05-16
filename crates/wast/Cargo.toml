@@ -12,7 +12,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.19"
-wasmtime = { path = "../api", version = "0.16.0-threadsafe.2", default-features = false, package = "substrate-wasmtime" }
+wasmtime = { path = "../api", version = "0.16.0-threadsafe.3", default-features = false, package = "substrate-wasmtime" }
 wast = "15.0.0"
 
 [badges]
