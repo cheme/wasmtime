@@ -266,4 +266,9 @@ impl Instance {
     pub fn get_global(&self, name: &str) -> Option<Global> {
         self.get_export(name)?.into_global()
     }
+
+    #[doc(hidden)]
+    pub fn handle(&self) -> &StoreInstanceHandle {
+        &self.handle
+    }
 }
