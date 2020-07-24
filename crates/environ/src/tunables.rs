@@ -51,7 +51,7 @@ impl Default for Tunables {
             /// wasting too much memory.
             dynamic_memory_offset_guard_size: 0x1_0000,
 
-            debug_info: false,
+            debug_info: true,
             interruptable: false,
         }
     }
